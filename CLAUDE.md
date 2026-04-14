@@ -12,30 +12,54 @@ Single-file application: `src/main.rs`. No modules — the tool is intentionally
 
 Uses the parent shell PID (`PPid` from `/proc/self/status`) as the session key. State is stored in `~/.req/sessions/<ppid>.json`. This is Linux-specific; porting to macOS/Windows would require a different PPID lookup.
 
+### Data model
+
+```rust
+struct State {
+    method:  Option<String>,
+    url:     Option<String>,
+    headers: HashMap<String, String>,
+    body:    Option<String>,
+    last:    Option<LastResponse>,   // populated by exec, never set by the user
+}
+
+struct LastResponse {
+    status:  u16,
+    headers: HashMap<String, String>,
+    body:    String,
+}
+```
+
+`last` is part of `State` so it round-trips through the session file automatically. Preset files (used with `file`) may omit the `last` field — `serde` deserialises it as `None`.
+
 ### State lifecycle
 
 1. Load `~/.req/sessions/<ppid>.json` (or start with `State::default()`)
 2. Process all CLI arguments left-to-right, mutating `state` in memory:
-   - `file <PATH>` replaces `state` wholesale from a JSON file
-   - `save <PATH>` writes the current in-memory `state` to a file (does not affect the session)
-   - `reset` replaces `state` with `State::default()` mid-parse
-   - All other commands update individual fields
+   - `file <PATH>` — replaces `state` wholesale from a JSON file
+   - `save <PATH>` — writes current in-memory `state` to a file (does not affect the session file)
+   - `reset` — replaces `state` with `State::default()` mid-parse
+   - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`
+   - `header-rm <KEY>` — removes one entry from `state.headers`; warns if the key is absent
+   - `method`, `url`, `body` — overwrite the respective field
 3. If any mutation occurred, persist `state` to `~/.req/sessions/<ppid>.json`
-4. Run `show` and/or `exec` after all mutations are applied
+4. Run `show`, `exec`, and/or `last` — always after all mutations, in that order
 
-`save` writes the in-memory state at the point it appears in the argument list, but because `show`/`exec` run last, combining them is always consistent: `req file a.json save b.json exec` loads, saves a copy, then executes.
+`exec` calls `save_state` itself (updating `state.last`) **before** printing the body, so a broken pipe (e.g. `req exec | head -5`) never prevents the response from being persisted.
+
+`last` reads `state.last` from the already-loaded in-memory state; it never triggers an additional disk write.
 
 ### Argument parsing
 
 No external parser (no `clap`). A hand-written `while` loop over `args` processes token pairs. This keeps the UX simple: `req method GET url https://example.com exec` reads naturally left-to-right.
 
-Order within a single invocation matters for `reset` (it clears state mid-parse), but `show` and `exec` always run after all mutations are applied.
+The `last` command peeks at the next token and consumes it only if it is a known subcommand (`body`, `headers`). Any other token is left in place for the main loop to process.
 
 ## Dependencies
 
 | Crate | Why |
 |---|---|
-| `reqwest` (blocking) | HTTP client; blocking feature avoids async complexity for a CLI |
+| `reqwest` (blocking) | HTTP client; blocking avoids async complexity for a CLI |
 | `serde` + `serde_json` | State serialization |
 | `dirs` | Cross-platform home directory |
 
@@ -44,14 +68,18 @@ Order within a single invocation matters for `reset` (it clears state mid-parse)
 ```bash
 cargo build              # dev build
 cargo build --release    # release build → target/release/req
+cargo clippy             # linter (should produce no warnings)
 cargo test               # (no tests yet)
 ```
 
-Quick smoke test:
+Quick smoke test (all in one shell invocation to share the same PPID session):
+
 ```bash
-./target/debug/req method GET url https://httpbin.org/get exec
-./target/debug/req show
-./target/debug/req reset
+./target/debug/req method GET url https://httpbin.org/get exec > /dev/null \
+  && ./target/debug/req last headers \
+  && ./target/debug/req last body | jq .url \
+  && ./target/debug/req header "X-Foo: bar" header-rm X-Foo show \
+  && ./target/debug/req reset
 ```
 
 ## Extending the tool
@@ -59,11 +87,11 @@ Quick smoke test:
 Likely next additions and where to put them:
 
 - **Named sessions** (`req session <name>`) — symlink or alias over `save`/`file`
+- **`last` to file** (`req last body > out.json`) — already works via stdout; no code change needed
 - **Query params** (`req param key value`) — add `params: HashMap<String,String>` to `State`, pass to `.query()` on the request builder
 - **Auth shorthand** (`req auth bearer <token>`) — sugar over `header Authorization "Bearer <token>"`
-- **Response headers** — `resp.headers()` before consuming `.text()`
 - **Timeout** (`req timeout 30`) — `client::Builder::timeout()`
-- **Verbose mode** — print request details before sending; flag in `State` or a CLI-only flag
+- **Verbose mode** — print full request details before sending; flag in `State` or a CLI-only bool
 - **Session list/switch** — list `~/.req/sessions/`, let user pick by number or name
 
 ## Constraints to keep
@@ -71,3 +99,4 @@ Likely next additions and where to put them:
 - No async runtime. `reqwest::blocking` is deliberate — a CLI tool doesn't benefit from async.
 - No `clap`. The positional key-value syntax is the UX; a flag-based parser would break it.
 - Status on stderr, body on stdout. Do not change this — it enables `req exec | jq .`.
+- `save_state` inside `exec` must come before any stdout write — broken-pipe safety.

@@ -26,9 +26,11 @@ Commands can be combined freely in a single invocation.
 | `method <METHOD>` | Set HTTP method (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`) |
 | `url <URL>` | Set request URL |
 | `header <KEY:VALUE>` | Add a header (`KEY:VALUE` or `KEY VALUE`) |
+| `header-rm <KEY>` | Remove a header by name |
 | `body <BODY>` | Set request body |
 | `exec` | Send the request using current session state |
 | `show` | Print the current session state |
+| `last [body\|headers]` | Show last response: full JSON (default), body only, or headers only |
 | `reset` | Clear all session state |
 | `file <PATH>` | Load state from a JSON file |
 | `save <PATH>` | Save current session state to a JSON file |
@@ -65,6 +67,37 @@ req exec
 req url https://api.example.com/posts exec
 ```
 
+### Managing headers
+
+```bash
+req header "Content-Type: application/json"
+req header Authorization "Bearer mytoken"
+
+# Remove a single header without touching the rest of the session
+req header-rm Authorization
+
+# Both formats for adding are equivalent:
+req header "Authorization: Bearer token"
+req header Authorization "Bearer token"
+```
+
+### Inspect the last response
+
+The session stores the last response automatically after every `exec`.
+
+```bash
+req last           # full JSON: { status, headers, body }
+req last headers   # status code + response headers
+req last body      # raw response body
+
+# pipe-friendly
+req last body | jq .name
+req last body | jq '.users[] | .email'
+```
+
+`last` reads from the stored session state, so it works even after the
+original `exec` has finished — no need to re-run the request.
+
 ### Save and restore sessions
 
 ```bash
@@ -83,14 +116,20 @@ req file prod.json url https://staging.example.com save staging.json
 
 This is useful for sharing named presets between terminals or keeping configurations for different environments.
 
-### Header formats
+## Output
 
-Both formats are equivalent:
+- Response status is written to **stderr** (`200 OK`)
+- Response body is written to **stdout**
+
+This makes it easy to pipe the body while still seeing the status:
 
 ```bash
-req header "Authorization: Bearer token"
-req header Authorization "Bearer token"
+req exec 2>/dev/null | jq .
+req exec | jq .name
 ```
+
+The response is also saved to the session, so you can inspect it later
+with `req last body` without re-sending the request.
 
 ## Session file format
 
@@ -104,21 +143,19 @@ Sessions are stored as plain JSON and can be edited or version-controlled:
     "Content-Type": "application/json",
     "Authorization": "Bearer mytoken"
   },
-  "body": "{\"name\": \"Alice\"}"
+  "body": "{\"name\": \"Alice\"}",
+  "last": {
+    "status": 201,
+    "headers": {
+      "content-type": "application/json",
+      "content-length": "42"
+    },
+    "body": "{\"id\": 1, \"name\": \"Alice\"}"
+  }
 }
 ```
 
-## Output
-
-- Response status is written to **stderr** (`200 OK`)
-- Response body is written to **stdout**
-
-This makes it easy to pipe the body while still seeing the status:
-
-```bash
-req exec 2>/dev/null | jq .
-req exec | jq .name
-```
+The `last` field is written automatically after each `exec` and can be omitted when creating preset files — it will be populated on first use.
 
 ## Dependencies
 
