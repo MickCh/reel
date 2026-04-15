@@ -96,13 +96,98 @@ enum LastView {
     All,
 }
 
+// Navigate a dot-separated path through a JSON value.
+// Array indices are supported as numeric path segments (e.g. "items.0.id").
+fn traverse_json(value: &serde_json::Value, path: &str) -> Option<String> {
+    let mut current = value;
+    for key in path.split('.') {
+        current = match current {
+            serde_json::Value::Object(map) => map.get(key)?,
+            serde_json::Value::Array(arr) => {
+                let idx: usize = key.parse().ok()?;
+                arr.get(idx)?
+            }
+            _ => return None,
+        };
+    }
+    Some(match current {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    })
+}
+
+// Evaluate a single template expression against the last response.
+//
+// Supported forms:
+//   status              → HTTP status code as a string
+//   body                → raw response body
+//   body.<path>         → dot-path into the JSON body (e.g. body.access.token)
+//   headers.<name>      → response header value (e.g. headers.content-type)
+fn eval_expr(expr: &str, last: &LastResponse) -> Result<String, String> {
+    if expr == "status" {
+        return Ok(last.status.to_string());
+    }
+    if expr == "body" {
+        return Ok(last.body.clone());
+    }
+    if let Some(path) = expr.strip_prefix("headers.") {
+        return last
+            .headers
+            .get(path)
+            .cloned()
+            .ok_or_else(|| format!("header '{}' not found in last response", path));
+    }
+    if let Some(path) = expr.strip_prefix("body.") {
+        let json: serde_json::Value = serde_json::from_str(&last.body)
+            .map_err(|e| format!("response body is not valid JSON: {}", e))?;
+        return traverse_json(&json, path)
+            .ok_or_else(|| format!("path '{}' not found in response body", path));
+    }
+    Err(format!("unknown template expression '${{{{ {} }}}}'", expr))
+}
+
+// Replace all ${{ expr }} placeholders in `text` using values from `last`.
+fn interpolate(text: &str, last: &LastResponse) -> Result<String, String> {
+    let mut result = String::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find("${{") {
+        result.push_str(&remaining[..start]);
+        remaining = &remaining[start + 3..];
+        let end = remaining
+            .find("}}")
+            .ok_or_else(|| "unclosed '${{' in template".to_string())?;
+        let expr = remaining[..end].trim();
+        remaining = &remaining[end + 2..];
+        result.push_str(&eval_expr(expr, last)?);
+    }
+    result.push_str(remaining);
+    Ok(result)
+}
+
+// Apply interpolation to all string fields of state (url, body, header values).
+fn apply_interpolation(state: &mut State, last: &LastResponse) -> Result<(), String> {
+    if let Some(url) = &state.url.clone() {
+        state.url = Some(interpolate(url, last)?);
+    }
+    if let Some(body) = &state.body.clone() {
+        state.body = Some(interpolate(body, last)?);
+    }
+    let keys: Vec<String> = state.headers.keys().cloned().collect();
+    for key in keys {
+        let val = state.headers[&key].clone();
+        state.headers.insert(key, interpolate(&val, last)?);
+    }
+    Ok(())
+}
+
 // Execute the request, store the response in state.last, and save the session.
-fn execute(state: &mut State) {
+// Returns false on failure so the caller can abort a chain.
+fn execute(state: &mut State) -> bool {
     let url = match &state.url {
         Some(u) => u.clone(),
         None => {
             eprintln!("error: URL not set (use: req url <URL>)");
-            std::process::exit(1);
+            return false;
         }
     };
 
@@ -111,19 +196,22 @@ fn execute(state: &mut State) {
     let client = reqwest::blocking::Client::new();
 
     let req_builder = match method.as_str() {
-        "GET"    => client.get(&url),
-        "POST"   => client.post(&url),
-        "PUT"    => client.put(&url),
-        "PATCH"  => client.patch(&url),
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
+        "PATCH" => client.patch(&url),
         "DELETE" => client.delete(&url),
-        "HEAD"   => client.head(&url),
+        "HEAD" => client.head(&url),
         other => {
             eprintln!("error: unknown method '{}'", other);
-            std::process::exit(1);
+            return false;
         }
     };
 
-    let req_builder = state.headers.iter().fold(req_builder, |b, (k, v)| b.header(k, v));
+    let req_builder = state
+        .headers
+        .iter()
+        .fold(req_builder, |b, (k, v)| b.header(k, v));
 
     let req_builder = match &state.body {
         Some(b) => req_builder.body(b.clone()),
@@ -138,9 +226,7 @@ fn execute(state: &mut State) {
             let resp_headers: HashMap<String, String> = resp
                 .headers()
                 .iter()
-                .filter_map(|(k, v)| {
-                    v.to_str().ok().map(|v| (k.to_string(), v.to_string()))
-                })
+                .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
                 .collect();
 
             match resp.text() {
@@ -152,13 +238,17 @@ fn execute(state: &mut State) {
                     });
                     save_state(state);
                     print!("{}", body);
+                    true
                 }
-                Err(e) => eprintln!("error reading response: {}", e),
+                Err(e) => {
+                    eprintln!("error reading response: {}", e);
+                    false
+                }
             }
         }
         Err(e) => {
             eprintln!("error: {}", e);
-            std::process::exit(1);
+            false
         }
     }
 }
@@ -173,11 +263,18 @@ fn print_usage() {
     eprintln!("  header-rm <KEY>        remove a header by name");
     eprintln!("  body <BODY>            set request body");
     eprintln!("  exec                   send the request");
+    eprintln!("  next <PATH>            exec current state, then load next request from file");
     eprintln!("  show                   print the current session state");
     eprintln!("  last [body|headers]    show last response (default: full JSON)");
     eprintln!("  reset                  clear the session state");
     eprintln!("  file <PATH>            load state from a JSON file");
     eprintln!("  save <PATH>            save current session state to a JSON file");
+    eprintln!();
+    eprintln!("Template interpolation in next-loaded files:");
+    eprintln!("  ${{{{ status }}}}          HTTP status code of the previous response");
+    eprintln!("  ${{{{ body }}}}            raw body of the previous response");
+    eprintln!("  ${{{{ body.field.sub }}}}  dot-path into the JSON body");
+    eprintln!("  ${{{{ headers.name }}}}    response header value");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  req method GET url https://httpbin.org/get exec");
@@ -186,6 +283,7 @@ fn print_usage() {
     eprintln!("  req body '{{\"key\":\"value\"}}' exec");
     eprintln!("  req last body | jq .name");
     eprintln!("  req last headers");
+    eprintln!("  req exec next step2.json next step3.json");
 }
 
 fn main() {
@@ -198,7 +296,6 @@ fn main() {
 
     let mut state = load_state();
     let mut modified = false;
-    let mut do_exec = false;
     let mut do_show = false;
     let mut do_last: Option<LastView> = None;
 
@@ -206,8 +303,57 @@ fn main() {
     while i < args.len() {
         match args[i].as_str() {
             "exec" => {
-                do_exec = true;
+                // execute() calls save_state internally, so no separate save needed here.
+                if !execute(&mut state) {
+                    std::process::exit(1);
+                }
+                modified = false;
                 i += 1;
+            }
+            "next" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: 'next' requires a file path");
+                    std::process::exit(1);
+                }
+                let path = PathBuf::from(&args[i + 1]);
+
+                // Remember the last response before replacing state.
+                let prev_last = state.last.clone();
+
+                // Load the next request file.
+                let content = match fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("error reading '{}': {}", path.display(), e);
+                        std::process::exit(1);
+                    }
+                };
+                let mut loaded: State = match serde_json::from_str(&content) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("error parsing '{}': {}", path.display(), e);
+                        std::process::exit(1);
+                    }
+                };
+
+                // Carry the previous response forward so templates can reference it.
+                loaded.last = prev_last;
+                state = loaded;
+
+                // Substitute ${{ … }} placeholders using the previous response.
+                if let Some(last) = state.last.clone()
+                    && let Err(e) = apply_interpolation(&mut state, &last)
+                {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+
+                // Execute the newly loaded (and interpolated) state.
+                if !execute(&mut state) {
+                    std::process::exit(1);
+                }
+                modified = false;
+                i += 2;
             }
             "show" => {
                 do_show = true;
@@ -216,9 +362,18 @@ fn main() {
             "last" => {
                 // Peek at the next token: consume it only if it's a known subcommand.
                 let view = match args.get(i + 1).map(String::as_str) {
-                    Some("body")    => { i += 2; LastView::Body }
-                    Some("headers") => { i += 2; LastView::Headers }
-                    _               => { i += 1; LastView::All }
+                    Some("body") => {
+                        i += 2;
+                        LastView::Body
+                    }
+                    Some("headers") => {
+                        i += 2;
+                        LastView::Headers
+                    }
+                    _ => {
+                        i += 1;
+                        LastView::All
+                    }
                 };
                 do_last = Some(view);
             }
@@ -344,11 +499,6 @@ fn main() {
 
     if do_show {
         show_state(&state);
-    }
-
-    // exec saves the session itself (it updates state.last)
-    if do_exec {
-        execute(&mut state);
     }
 
     if let Some(view) = do_last {
