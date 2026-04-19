@@ -5,13 +5,13 @@ use crate::session::save_state;
 
 // Execute the current state as an HTTP request.
 // Stores the response in state.last and saves the session before writing to stdout
-// so a broken pipe (e.g. `req send | head -5`) never prevents persistence.
+// so a broken pipe (e.g. `reel send | head -5`) never prevents persistence.
 // Returns false on failure so the caller can abort a chain.
 pub fn execute(state: &mut State) -> bool {
     let url = match &state.url {
         Some(u) => u.clone(),
         None => {
-            eprintln!("error: URL not set (use: req url <URL>)");
+            eprintln!("error: URL not set (use: reel url <URL>)");
             return false;
         }
     };

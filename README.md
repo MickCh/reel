@@ -1,10 +1,10 @@
-# req
+# reel
 
 A stateful HTTP client for the command line. Like `curl`, but it remembers your settings across invocations — per terminal window.
 
 ## How sessions work
 
-Each terminal window runs its own shell process. `req` uses the parent shell's PID as a session key, storing state in `~/.req/sessions/<ppid>.json`. This means:
+Each terminal window runs its own shell process. `reel` uses the parent shell's PID as a session key, storing state in `~/.reel/sessions/<ppid>.json`. This means:
 
 - Settings persist between invocations **in the same terminal window**
 - Different terminal windows have **independent sessions**
@@ -14,7 +14,7 @@ Each terminal window runs its own shell process. `req` uses the parent shell's P
 
 ```bash
 cargo build --release
-sudo cp target/release/req /usr/local/bin/
+sudo cp target/release/reel /usr/local/bin/
 ```
 
 ## Commands
@@ -41,45 +41,45 @@ Commands can be combined freely in a single invocation.
 ### Build a request step by step
 
 ```bash
-req url https://api.example.com/users
-req method POST
-req header "Content-Type: application/json"
-req header "Authorization: Bearer mytoken"
-req body '{"name": "Alice"}'
-req show      # inspect before sending
-req send
+reel url https://api.example.com/users
+reel method POST
+reel header "Content-Type: application/json"
+reel header "Authorization: Bearer mytoken"
+reel body '{"name": "Alice"}'
+reel show      # inspect before sending
+reel send
 ```
 
 ### One-liner
 
 ```bash
-req method GET url https://httpbin.org/get send
+reel method GET url https://httpbin.org/get send
 ```
 
 ### Reuse settings across calls
 
 ```bash
 # Set base config once
-req url https://api.example.com/users
-req header "Authorization: Bearer mytoken"
+reel url https://api.example.com/users
+reel header "Authorization: Bearer mytoken"
 
 # Subsequent calls reuse the stored state
-req send
-req url https://api.example.com/posts send
+reel send
+reel url https://api.example.com/posts send
 ```
 
 ### Managing headers
 
 ```bash
-req header "Content-Type: application/json"
-req header Authorization "Bearer mytoken"
+reel header "Content-Type: application/json"
+reel header Authorization "Bearer mytoken"
 
 # Remove a single header without touching the rest of the session
-req header-rm Authorization
+reel header-rm Authorization
 
 # Both formats for adding are equivalent:
-req header "Authorization: Bearer token"
-req header Authorization "Bearer token"
+reel header "Authorization: Bearer token"
+reel header Authorization "Bearer token"
 ```
 
 ### Inspect the last response
@@ -87,13 +87,13 @@ req header Authorization "Bearer token"
 The session stores the last response automatically after every `send`.
 
 ```bash
-req last           # full JSON: { status, headers, body }
-req last headers   # status code + response headers
-req last body      # raw response body
+reel last           # full JSON: { status, headers, body }
+reel last headers   # status code + response headers
+reel last body      # raw response body
 
 # pipe-friendly
-req last body | jq .name
-req last body | jq '.users[] | .email'
+reel last body | jq .name
+reel last body | jq '.users[] | .email'
 ```
 
 `last` reads from the stored session state, so it works even after the
@@ -103,16 +103,16 @@ original `send` has finished — no need to re-run the request.
 
 ```bash
 # Save current session to a file
-req save staging.json
+reel save staging.json
 
 # Restore it later (in any terminal window)
-req load staging.json send
+reel load staging.json send
 
 # Set up, save, and execute in one go
-req method POST url https://api.example.com save prod.json send
+reel method POST url https://api.example.com save prod.json send
 
 # Derive a new preset from an existing one
-req load prod.json url https://staging.example.com save staging.json
+reel load prod.json url https://staging.example.com save staging.json
 ```
 
 This is useful for sharing named presets between terminals or keeping configurations for different environments.
@@ -122,7 +122,7 @@ This is useful for sharing named presets between terminals or keeping configurat
 `then` loads a preset file, fills in `${{ expr }}` placeholders using the previous response, and sends the request immediately. This lets you chain dependent calls without scripting.
 
 ```bash
-req load login.json send then dashboard.json
+reel load login.json send then dashboard.json
 ```
 
 Supported expressions in preset files:
@@ -156,12 +156,12 @@ If a placeholder cannot be resolved the chain aborts immediately with an error.
 This makes it easy to pipe the body while still seeing the status:
 
 ```bash
-req send 2>/dev/null | jq .
-req send | jq .name
+reel send 2>/dev/null | jq .
+reel send | jq .name
 ```
 
 The response is also saved to the session, so you can inspect it later
-with `req last body` without re-sending the request.
+with `reel last body` without re-sending the request.
 
 ## Session file format
 

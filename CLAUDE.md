@@ -1,8 +1,8 @@
-# req — developer notes for Claude
+# reel — developer notes for Claude
 
 ## Project overview
 
-`req` is a stateful CLI HTTP client written in Rust. It behaves like `curl` but persists request state (method, URL, headers, body) across invocations within the same terminal session.
+`reel` is a stateful CLI HTTP client written in Rust. It behaves like `curl` but persists request state (method, URL, headers, body) across invocations within the same terminal session.
 
 ## Architecture
 
@@ -21,7 +21,7 @@ Dependency direction: `cli` → `http`/`template`/`session` → `model`. No modu
 
 ### Session identification
 
-Uses the parent shell PID (`PPid` from `/proc/self/status`) as the session key. State is stored in `~/.req/sessions/<ppid>.json`. This is Linux-specific; porting to macOS/Windows would require a different PPID lookup.
+Uses the parent shell PID (`PPid` from `/proc/self/status`) as the session key. State is stored in `~/.reel/sessions/<ppid>.json`. This is Linux-specific; porting to macOS/Windows would require a different PPID lookup.
 
 ### Data model
 
@@ -45,7 +45,7 @@ struct LastResponse {
 
 ### State lifecycle
 
-1. Load `~/.req/sessions/<ppid>.json` (or start with `State::default()`)
+1. Load `~/.reel/sessions/<ppid>.json` (or start with `State::default()`)
 2. Process all CLI arguments left-to-right, mutating `state` in memory:
    - `load <PATH>` — replaces `state` wholesale from a JSON file
    - `save <PATH>` — writes current in-memory `state` to a file (does not affect the session file)
@@ -58,7 +58,7 @@ struct LastResponse {
 3. If any mutation occurred without a following `send`/`then`, persist `state` at end of loop
 4. Run `show` and/or `last` — always after the main loop, in that order
 
-`send` calls `save_state` itself (updating `state.last`) **before** printing the body, so a broken pipe (e.g. `req send | head -5`) never prevents the response from being persisted.
+`send` calls `save_state` itself (updating `state.last`) **before** printing the body, so a broken pipe (e.g. `reel send | head -5`) never prevents the response from being persisted.
 
 `last` reads `state.last` from the already-loaded in-memory state; it never triggers an additional disk write.
 
@@ -77,7 +77,7 @@ If a placeholder cannot be resolved (missing key, non-JSON body, unclosed `${{`)
 
 ### Argument parsing
 
-No external parser (no `clap`). A hand-written `while` loop over `args` processes token pairs. This keeps the UX simple: `req method GET url https://example.com exec` reads naturally left-to-right.
+No external parser (no `clap`). A hand-written `while` loop over `args` processes token pairs. This keeps the UX simple: `reel method GET url https://example.com exec` reads naturally left-to-right.
 
 `send` and `then` execute inline during the loop (not deferred). `show` and `last` are deferred and run once after the loop.
 
@@ -95,7 +95,7 @@ The `last` command peeks at the next token and consumes it only if it is a known
 
 ```bash
 cargo build              # dev build
-cargo build --release    # release build → target/release/req
+cargo build --release    # release build → target/release/reel
 cargo clippy             # linter (should produce no warnings)
 cargo test               # (no tests yet)
 ```
@@ -103,11 +103,11 @@ cargo test               # (no tests yet)
 Quick smoke test (all in one shell invocation to share the same PPID session):
 
 ```bash
-./target/debug/req method GET url https://httpbin.org/get send > /dev/null \
-  && ./target/debug/req last headers \
-  && ./target/debug/req last body | jq .url \
-  && ./target/debug/req header "X-Foo: bar" header-rm X-Foo show \
-  && ./target/debug/req reset
+./target/debug/reel method GET url https://httpbin.org/get send > /dev/null \
+  && ./target/debug/reel last headers \
+  && ./target/debug/reel last body | jq .url \
+  && ./target/debug/reel header "X-Foo: bar" header-rm X-Foo show \
+  && ./target/debug/reel reset
 ```
 
 Chaining smoke test:
@@ -115,25 +115,25 @@ Chaining smoke test:
 ```bash
 # step1.json: GET https://httpbin.org/get
 # step2.json: GET https://httpbin.org/anything, header X-Token: ${{ body.some.field }}
-./target/debug/req load step1.json send then step2.json last body | jq .headers
+./target/debug/reel load step1.json send then step2.json last body | jq .headers
 ```
 
 ## Extending the tool
 
 Likely next additions and where to put them:
 
-- **Named sessions** (`req session <name>`) — symlink or alias over `save`/`load`
+- **Named sessions** (`reel session <name>`) — symlink or alias over `save`/`load`
 - **Conditional chaining** — stop chain if status ≥ 400 (currently any non-network failure aborts)
-- **`last` to file** (`req last body > out.json`) — already works via stdout; no code change needed
-- **Query params** (`req param key value`) — add `params: HashMap<String,String>` to `State`, pass to `.query()` on the request builder
-- **Auth shorthand** (`req auth bearer <token>`) — sugar over `header Authorization "Bearer <token>"`
-- **Timeout** (`req timeout 30`) — `client::Builder::timeout()`
+- **`last` to file** (`reel last body > out.json`) — already works via stdout; no code change needed
+- **Query params** (`reel param key value`) — add `params: HashMap<String,String>` to `State`, pass to `.query()` on the request builder
+- **Auth shorthand** (`reel auth bearer <token>`) — sugar over `header Authorization "Bearer <token>"`
+- **Timeout** (`reel timeout 30`) — `client::Builder::timeout()`
 - **Verbose mode** — print full request details before sending; flag in `State` or a CLI-only bool
-- **Session list/switch** — list `~/.req/sessions/`, let user pick by number or name
+- **Session list/switch** — list `~/.reel/sessions/`, let user pick by number or name
 
 ## Constraints to keep
 
 - No async runtime. `reqwest::blocking` is deliberate — a CLI tool doesn't benefit from async.
 - No `clap`. The positional key-value syntax is the UX; a flag-based parser would break it.
-- Status on stderr, body on stdout. Do not change this — it enables `req send | jq .`.
+- Status on stderr, body on stdout. Do not change this — it enables `reel send | jq .`.
 - `save_state` inside `send` (`http::execute`) must come before any stdout write — broken-pipe safety.

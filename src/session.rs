@@ -19,7 +19,7 @@ fn get_ppid() -> u32 {
 pub fn session_path() -> PathBuf {
     dirs::home_dir()
         .expect("cannot determine home directory")
-        .join(".req")
+        .join(".reel")
         .join("sessions")
         .join(format!("{}.json", get_ppid()))
 }

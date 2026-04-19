@@ -37,12 +37,12 @@ pub fn show_last(state: &State, view: LastView) {
             }
             LastView::All => println!("{}", serde_json::to_string_pretty(last).unwrap()),
         },
-        None => eprintln!("error: no response stored yet (run 'req send' first)"),
+        None => eprintln!("error: no response stored yet (run 'reel send' first)"),
     }
 }
 
 pub fn print_usage() {
-    eprintln!("Usage: req [COMMANDS...]");
+    eprintln!("Usage: reel [COMMANDS...]");
     eprintln!();
     eprintln!("Commands (can be combined in a single invocation):");
     eprintln!("  method <METHOD>        set HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD)");
@@ -65,13 +65,13 @@ pub fn print_usage() {
     eprintln!("  ${{{{ headers.name }}}}    response header value");
     eprintln!();
     eprintln!("Examples:");
-    eprintln!("  req method GET url https://httpbin.org/get send");
-    eprintln!("  req header \"Authorization: Bearer token\"");
-    eprintln!("  req header Content-Type application/json");
-    eprintln!("  req body '{{\"key\":\"value\"}}' send");
-    eprintln!("  req last body | jq .name");
-    eprintln!("  req last headers");
-    eprintln!("  req send then step2.json then step3.json");
+    eprintln!("  reel method GET url https://httpbin.org/get send");
+    eprintln!("  reel header \"Authorization: Bearer token\"");
+    eprintln!("  reel header Content-Type application/json");
+    eprintln!("  reel body '{{\"key\":\"value\"}}' send");
+    eprintln!("  reel last body | jq .name");
+    eprintln!("  reel last headers");
+    eprintln!("  reel send then step2.json then step3.json");
 }
 
 pub struct ParseResult {
@@ -270,7 +270,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
             }
             unknown => {
                 eprintln!("error: unknown command '{}'", unknown);
-                eprintln!("Run 'req' with no arguments to see usage.");
+                eprintln!("Run 'reel' with no arguments to see usage.");
                 i += 1;
             }
         }
