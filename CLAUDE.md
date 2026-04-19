@@ -6,7 +6,18 @@
 
 ## Architecture
 
-Single-file application: `src/main.rs`. No modules — the tool is intentionally small.
+Five modules under `src/`:
+
+| File | Responsibility |
+|---|---|
+| `main.rs` | Entry point — wires modules together |
+| `model.rs` | `State`, `LastResponse` structs (pure data, no I/O) |
+| `session.rs` | Session persistence (`get_ppid`, `session_path`, `load_state`, `save_state`) |
+| `template.rs` | Template interpolation engine (`${{ expr }}`) |
+| `http.rs` | HTTP execution (`execute`) |
+| `cli.rs` | Argument parser, display functions (`show_state`, `show_last`, `print_usage`) |
+
+Dependency direction: `cli` → `http`/`template`/`session` → `model`. No module depends on a layer above it.
 
 ### Session identification
 
@@ -30,13 +41,13 @@ struct LastResponse {
 }
 ```
 
-`last` is part of `State` so it round-trips through the session file automatically. Preset files (used with `file`) may omit the `last` field — `serde` deserialises it as `None`.
+`last` is part of `State` so it round-trips through the session file automatically. Preset files (used with `load`) may omit the `last` field — `serde` deserialises it as `None`.
 
 ### State lifecycle
 
 1. Load `~/.req/sessions/<ppid>.json` (or start with `State::default()`)
 2. Process all CLI arguments left-to-right, mutating `state` in memory:
-   - `file <PATH>` — replaces `state` wholesale from a JSON file
+   - `load <PATH>` — replaces `state` wholesale from a JSON file
    - `save <PATH>` — writes current in-memory `state` to a file (does not affect the session file)
    - `reset` — replaces `state` with `State::default()` mid-parse
    - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`
@@ -104,14 +115,14 @@ Chaining smoke test:
 ```bash
 # step1.json: GET https://httpbin.org/get
 # step2.json: GET https://httpbin.org/anything, header X-Token: ${{ body.some.field }}
-./target/debug/req file step1.json send then step2.json last body | jq .headers
+./target/debug/req load step1.json send then step2.json last body | jq .headers
 ```
 
 ## Extending the tool
 
 Likely next additions and where to put them:
 
-- **Named sessions** (`req session <name>`) — symlink or alias over `save`/`file`
+- **Named sessions** (`req session <name>`) — symlink or alias over `save`/`load`
 - **Conditional chaining** — stop chain if status ≥ 400 (currently any non-network failure aborts)
 - **`last` to file** (`req last body > out.json`) — already works via stdout; no code change needed
 - **Query params** (`req param key value`) — add `params: HashMap<String,String>` to `State`, pass to `.query()` on the request builder
@@ -124,5 +135,5 @@ Likely next additions and where to put them:
 
 - No async runtime. `reqwest::blocking` is deliberate — a CLI tool doesn't benefit from async.
 - No `clap`. The positional key-value syntax is the UX; a flag-based parser would break it.
-- Status on stderr, body on stdout. Do not change this — it enables `req exec | jq .`.
-- `save_state` inside `exec` must come before any stdout write — broken-pipe safety.
+- Status on stderr, body on stdout. Do not change this — it enables `req send | jq .`.
+- `save_state` inside `send` (`http::execute`) must come before any stdout write — broken-pipe safety.

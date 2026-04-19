@@ -33,7 +33,7 @@ Commands can be combined freely in a single invocation.
 | `show` | Print the current session state |
 | `last [body\|headers]` | Show last response: full JSON (default), body only, or headers only |
 | `reset` | Clear all session state |
-| `file <PATH>` | Load state from a JSON file |
+| `load <PATH>` | Load state from a JSON file |
 | `save <PATH>` | Save current session state to a JSON file |
 
 ## Usage examples
@@ -106,13 +106,13 @@ original `send` has finished — no need to re-run the request.
 req save staging.json
 
 # Restore it later (in any terminal window)
-req file staging.json send
+req load staging.json send
 
 # Set up, save, and execute in one go
 req method POST url https://api.example.com save prod.json send
 
 # Derive a new preset from an existing one
-req file prod.json url https://staging.example.com save staging.json
+req load prod.json url https://staging.example.com save staging.json
 ```
 
 This is useful for sharing named presets between terminals or keeping configurations for different environments.
@@ -122,7 +122,7 @@ This is useful for sharing named presets between terminals or keeping configurat
 `then` loads a preset file, fills in `${{ expr }}` placeholders using the previous response, and sends the request immediately. This lets you chain dependent calls without scripting.
 
 ```bash
-req file login.json send then dashboard.json
+req load login.json send then dashboard.json
 ```
 
 Supported expressions in preset files:
