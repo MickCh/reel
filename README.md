@@ -28,7 +28,8 @@ Commands can be combined freely in a single invocation.
 | `header <KEY:VALUE>` | Add a header (`KEY:VALUE` or `KEY VALUE`) |
 | `header-rm <KEY>` | Remove a header by name |
 | `body <BODY>` | Set request body |
-| `exec` | Send the request using current session state |
+| `send` | Send the request using current session state |
+| `then <PATH>` | Load preset file, interpolate `${{ expr }}` from last response, and send |
 | `show` | Print the current session state |
 | `last [body\|headers]` | Show last response: full JSON (default), body only, or headers only |
 | `reset` | Clear all session state |
@@ -46,13 +47,13 @@ req header "Content-Type: application/json"
 req header "Authorization: Bearer mytoken"
 req body '{"name": "Alice"}'
 req show      # inspect before sending
-req exec
+req send
 ```
 
 ### One-liner
 
 ```bash
-req method GET url https://httpbin.org/get exec
+req method GET url https://httpbin.org/get send
 ```
 
 ### Reuse settings across calls
@@ -63,8 +64,8 @@ req url https://api.example.com/users
 req header "Authorization: Bearer mytoken"
 
 # Subsequent calls reuse the stored state
-req exec
-req url https://api.example.com/posts exec
+req send
+req url https://api.example.com/posts send
 ```
 
 ### Managing headers
@@ -83,7 +84,7 @@ req header Authorization "Bearer token"
 
 ### Inspect the last response
 
-The session stores the last response automatically after every `exec`.
+The session stores the last response automatically after every `send`.
 
 ```bash
 req last           # full JSON: { status, headers, body }
@@ -96,7 +97,7 @@ req last body | jq '.users[] | .email'
 ```
 
 `last` reads from the stored session state, so it works even after the
-original `exec` has finished — no need to re-run the request.
+original `send` has finished — no need to re-run the request.
 
 ### Save and restore sessions
 
@@ -105,16 +106,47 @@ original `exec` has finished — no need to re-run the request.
 req save staging.json
 
 # Restore it later (in any terminal window)
-req file staging.json exec
+req file staging.json send
 
 # Set up, save, and execute in one go
-req method POST url https://api.example.com save prod.json exec
+req method POST url https://api.example.com save prod.json send
 
 # Derive a new preset from an existing one
 req file prod.json url https://staging.example.com save staging.json
 ```
 
 This is useful for sharing named presets between terminals or keeping configurations for different environments.
+
+### Chaining requests with `then`
+
+`then` loads a preset file, fills in `${{ expr }}` placeholders using the previous response, and sends the request immediately. This lets you chain dependent calls without scripting.
+
+```bash
+req file login.json send then dashboard.json
+```
+
+Supported expressions in preset files:
+
+| Expression | Resolves to |
+|---|---|
+| `${{ status }}` | HTTP status code of the previous response |
+| `${{ body }}` | Raw response body |
+| `${{ body.some.field }}` | Dot-path into a JSON body (e.g. `body.access.token`, `body.items.0.id`) |
+| `${{ headers.content-type }}` | A response header value |
+
+Example preset (`step2.json`) that uses a token from the previous response:
+
+```json
+{
+  "method": "GET",
+  "url": "https://api.example.com/profile",
+  "headers": {
+    "Authorization": "Bearer ${{ body.access_token }}"
+  }
+}
+```
+
+If a placeholder cannot be resolved the chain aborts immediately with an error.
 
 ## Output
 
@@ -124,8 +156,8 @@ This is useful for sharing named presets between terminals or keeping configurat
 This makes it easy to pipe the body while still seeing the status:
 
 ```bash
-req exec 2>/dev/null | jq .
-req exec | jq .name
+req send 2>/dev/null | jq .
+req send | jq .name
 ```
 
 The response is also saved to the session, so you can inspect it later
@@ -155,7 +187,7 @@ Sessions are stored as plain JSON and can be edited or version-controlled:
 }
 ```
 
-The `last` field is written automatically after each `exec` and can be omitted when creating preset files — it will be populated on first use.
+The `last` field is written automatically after each `send` and can be omitted when creating preset files — it will be populated on first use.
 
 ## Dependencies
 
