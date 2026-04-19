@@ -262,28 +262,28 @@ fn print_usage() {
     eprintln!("  header <KEY:VALUE>     add a header (KEY:VALUE or KEY VALUE)");
     eprintln!("  header-rm <KEY>        remove a header by name");
     eprintln!("  body <BODY>            set request body");
-    eprintln!("  exec                   send the request");
-    eprintln!("  next <PATH>            exec current state, then load next request from file");
+    eprintln!("  send                   send the current request");
+    eprintln!("  then <PATH>            load next request from file (with template interpolation) and send it");
     eprintln!("  show                   print the current session state");
     eprintln!("  last [body|headers]    show last response (default: full JSON)");
     eprintln!("  reset                  clear the session state");
     eprintln!("  file <PATH>            load state from a JSON file");
     eprintln!("  save <PATH>            save current session state to a JSON file");
     eprintln!();
-    eprintln!("Template interpolation in next-loaded files:");
+    eprintln!("Template interpolation in files loaded by 'then':");
     eprintln!("  ${{{{ status }}}}          HTTP status code of the previous response");
     eprintln!("  ${{{{ body }}}}            raw body of the previous response");
     eprintln!("  ${{{{ body.field.sub }}}}  dot-path into the JSON body");
     eprintln!("  ${{{{ headers.name }}}}    response header value");
     eprintln!();
     eprintln!("Examples:");
-    eprintln!("  req method GET url https://httpbin.org/get exec");
+    eprintln!("  req method GET url https://httpbin.org/get send");
     eprintln!("  req header \"Authorization: Bearer token\"");
     eprintln!("  req header Content-Type application/json");
-    eprintln!("  req body '{{\"key\":\"value\"}}' exec");
+    eprintln!("  req body '{{\"key\":\"value\"}}' send");
     eprintln!("  req last body | jq .name");
     eprintln!("  req last headers");
-    eprintln!("  req exec next step2.json next step3.json");
+    eprintln!("  req send then step2.json then step3.json");
 }
 
 fn main() {
@@ -302,7 +302,7 @@ fn main() {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "exec" => {
+            "send" => {
                 // execute() calls save_state internally, so no separate save needed here.
                 if !execute(&mut state) {
                     std::process::exit(1);
@@ -310,9 +310,9 @@ fn main() {
                 modified = false;
                 i += 1;
             }
-            "next" => {
+            "then" => {
                 if i + 1 >= args.len() {
-                    eprintln!("error: 'next' requires a file path");
+                    eprintln!("error: 'then' requires a file path");
                     std::process::exit(1);
                 }
                 let path = PathBuf::from(&args[i + 1]);
@@ -354,6 +354,14 @@ fn main() {
                 }
                 modified = false;
                 i += 2;
+            }
+            "exec" => {
+                eprintln!("error: 'exec' has been renamed to 'send'");
+                std::process::exit(1);
+            }
+            "next" => {
+                eprintln!("error: 'next' has been renamed to 'then'");
+                std::process::exit(1);
             }
             "show" => {
                 do_show = true;

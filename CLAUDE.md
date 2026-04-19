@@ -42,18 +42,18 @@ struct LastResponse {
    - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`
    - `header-rm <KEY>` — removes one entry from `state.headers`; warns if the key is absent
    - `method`, `url`, `body` — overwrite the respective field
-   - `exec` — executes immediately inline (not deferred); calls `save_state` before printing body
-   - `next <PATH>` — loads a preset file, applies template interpolation from `state.last`, then executes immediately inline; aborts the whole chain on failure
-3. If any mutation occurred without a following `exec`/`next`, persist `state` at end of loop
+   - `send` — executes immediately inline (not deferred); calls `save_state` before printing body
+   - `then <PATH>` — loads a preset file, applies template interpolation from `state.last`, then executes immediately inline; aborts the whole chain on failure
+3. If any mutation occurred without a following `send`/`then`, persist `state` at end of loop
 4. Run `show` and/or `last` — always after the main loop, in that order
 
-`exec` calls `save_state` itself (updating `state.last`) **before** printing the body, so a broken pipe (e.g. `req exec | head -5`) never prevents the response from being persisted.
+`send` calls `save_state` itself (updating `state.last`) **before** printing the body, so a broken pipe (e.g. `req send | head -5`) never prevents the response from being persisted.
 
 `last` reads `state.last` from the already-loaded in-memory state; it never triggers an additional disk write.
 
-### Template interpolation (`next`)
+### Template interpolation (`then`)
 
-Preset files loaded by `next` may contain `${{ expr }}` placeholders in `url`, `body`, and header values. Supported expressions:
+Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `body`, and header values. Supported expressions:
 
 | Expression | Resolves to |
 |---|---|
@@ -68,7 +68,7 @@ If a placeholder cannot be resolved (missing key, non-JSON body, unclosed `${{`)
 
 No external parser (no `clap`). A hand-written `while` loop over `args` processes token pairs. This keeps the UX simple: `req method GET url https://example.com exec` reads naturally left-to-right.
 
-`exec` and `next` execute inline during the loop (not deferred). `show` and `last` are deferred and run once after the loop.
+`send` and `then` execute inline during the loop (not deferred). `show` and `last` are deferred and run once after the loop.
 
 The `last` command peeks at the next token and consumes it only if it is a known subcommand (`body`, `headers`). Any other token is left in place for the main loop to process.
 
@@ -92,7 +92,7 @@ cargo test               # (no tests yet)
 Quick smoke test (all in one shell invocation to share the same PPID session):
 
 ```bash
-./target/debug/req method GET url https://httpbin.org/get exec > /dev/null \
+./target/debug/req method GET url https://httpbin.org/get send > /dev/null \
   && ./target/debug/req last headers \
   && ./target/debug/req last body | jq .url \
   && ./target/debug/req header "X-Foo: bar" header-rm X-Foo show \
@@ -104,7 +104,7 @@ Chaining smoke test:
 ```bash
 # step1.json: GET https://httpbin.org/get
 # step2.json: GET https://httpbin.org/anything, header X-Token: ${{ body.some.field }}
-./target/debug/req file step1.json exec next step2.json last body | jq .headers
+./target/debug/req file step1.json send then step2.json last body | jq .headers
 ```
 
 ## Extending the tool
