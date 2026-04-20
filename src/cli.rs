@@ -33,11 +33,15 @@ pub fn show_state(state: &State) {
     }
 }
 
+fn source_label(r: &ResponseRecord) -> &str {
+    r.source.as_deref().unwrap_or("(session)")
+}
+
 fn show_single(r: &ResponseRecord, view: &ResponseView) {
     match view {
         ResponseView::Body => print!("{}", r.body),
         ResponseView::Headers => {
-            println!("{}", r.status);
+            println!("{} — {}", r.status, source_label(r));
             for (k, v) in &r.headers {
                 println!("{}: {}", k, v);
             }
@@ -68,7 +72,7 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
             ResponseView::Body => {
                 for (i, r) in state.responses.iter().enumerate() {
                     if state.responses.len() > 1 {
-                        let label = r.source.as_deref().unwrap_or("send");
+                        let label = source_label(r);
                         eprintln!("[{}] {}", i, label);
                     }
                     print!("{}", r.body);
@@ -79,7 +83,7 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
             }
             ResponseView::Headers => {
                 for (i, r) in state.responses.iter().enumerate() {
-                    let label = r.source.as_deref().unwrap_or("send");
+                    let label = source_label(r);
                     println!("[{}] {} — {}", i, r.status, label);
                     for (k, v) in &r.headers {
                         println!("  {}: {}", k, v);

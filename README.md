@@ -131,6 +131,8 @@ This is useful for sharing named presets between terminals or keeping configurat
 
 `then` loads a preset file, fills in `${{ expr }}` placeholders using the previous response, and sends the request immediately. This lets you chain dependent calls without scripting.
 
+The first request in a chain is loaded explicitly with `load` and sent with `send`. This is intentional — it lets you inspect or modify the session state before committing to the chain.
+
 ```bash
 reel load login.json send then dashboard.json
 ```
