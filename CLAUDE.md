@@ -12,9 +12,9 @@ Five modules under `src/`:
 |---|---|
 | `main.rs` | Entry point — wires modules together |
 | `model.rs` | `State`, `LastResponse` structs (pure data, no I/O) |
-| `session.rs` | Session persistence (`get_ppid`, `session_path`, `load_state`, `save_state`) |
+| `session.rs` | Session persistence (`get_ppid`, `session_path`, `load_state`, `save_state`, `delete_session`) |
 | `template.rs` | Template interpolation engine (`${{ expr }}`) |
-| `http.rs` | HTTP execution (`execute`) |
+| `http.rs` | HTTP execution (`build_client`, `execute`) |
 | `cli.rs` | Argument parser, display functions (`show_state`, `show_response`, `print_usage`) |
 
 Dependency direction: `cli` → `http`/`template`/`session` → `model`. No module depends on a layer above it.
@@ -50,7 +50,7 @@ struct ResponseRecord {
 2. Process all CLI arguments left-to-right, mutating `state` in memory:
    - `load <PATH>` — replaces `state` wholesale from a JSON file
    - `save <PATH>` — writes current in-memory `state` to a file (does not affect the session file)
-   - `reset` — replaces `state` with `State::default()` mid-parse
+   - `reset` — replaces `state` with `State::default()` and deletes the session file
    - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`
    - `header-rm <KEY>` — removes one entry from `state.headers`; warns if the key is absent
    - `method`, `url`, `body` — overwrite the respective field
@@ -84,6 +84,10 @@ No external parser (no `clap`). A hand-written `while` loop over `args` processe
 
 The `response` command peeks at the next token(s) to consume an optional index and/or `body`/`headers` modifier. Any other token is left in place for the main loop to process.
 
+`fail` sets a flag that causes the run to exit with code 1 if any subsequent `send` or `then` receives a 4xx/5xx response. `--insecure` skips TLS certificate verification (pre-scanned before the client is built).
+
+`parse_and_run` returns `Result<ParseResult, ()>`. On `Err(())`, `main` calls `std::process::exit(1)`. All user-visible status messages (reset, save, load) go to stderr so they never pollute piped output.
+
 ## Dependencies
 
 | Crate | Why |
@@ -98,7 +102,7 @@ The `response` command peeks at the next token(s) to consume an optional index a
 cargo build              # dev build
 cargo build --release    # release build → target/release/reel
 cargo clippy             # linter (should produce no warnings)
-cargo test               # (no tests yet)
+cargo test               # unit tests for model and template modules
 ```
 
 Quick smoke test (all in one shell invocation to share the same PPID session):
@@ -124,11 +128,10 @@ Chaining smoke test:
 Likely next additions and where to put them:
 
 - **Named sessions** (`reel session <name>`) — symlink or alias over `save`/`load`
-- **Conditional chaining** — stop chain if status ≥ 400 (currently any non-network failure aborts)
+- **Configurable timeout** (`reel timeout 30`) — currently hardcoded to 30 s; expose as a `State` field
 - **Response to file** (`reel response body > out.json`) — already works via stdout; no code change needed
 - **Query params** (`reel param key value`) — add `params: HashMap<String,String>` to `State`, pass to `.query()` on the request builder
 - **Auth shorthand** (`reel auth bearer <token>`) — sugar over `header Authorization "Bearer <token>"`
-- **Timeout** (`reel timeout 30`) — `client::Builder::timeout()`
 - **Verbose mode** — print full request details before sending; flag in `State` or a CLI-only bool
 - **Session list/switch** — list `~/.reel/sessions/`, let user pick by number or name
 

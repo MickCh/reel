@@ -70,11 +70,11 @@ pub fn interpolate(text: &str, record: &ResponseRecord) -> Result<String, String
 
 // Apply interpolation to all string fields of state (url, body, header values).
 pub fn apply_interpolation(state: &mut State, record: &ResponseRecord) -> Result<(), String> {
-    if let Some(url) = &state.url.clone() {
-        state.url = Some(interpolate(url, record)?);
+    if let Some(url) = state.url.take() {
+        state.url = Some(interpolate(&url, record)?);
     }
-    if let Some(body) = &state.body.clone() {
-        state.body = Some(interpolate(body, record)?);
+    if let Some(body) = state.body.take() {
+        state.body = Some(interpolate(&body, record)?);
     }
     let keys: Vec<String> = state.headers.keys().cloned().collect();
     for key in keys {

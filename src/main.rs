@@ -15,13 +15,15 @@ fn main() {
     }
 
     let mut state = session::load_state();
-    let result = cli::parse_and_run(&args, &mut state);
-
-    if result.do_show {
-        cli::show_state(&state);
-    }
-
-    if let Some((target, view)) = result.do_response {
-        cli::show_response(&state, target, view);
+    match cli::parse_and_run(&args, &mut state) {
+        Ok(result) => {
+            if result.do_show {
+                cli::show_state(&state);
+            }
+            if let Some((target, view)) = result.do_response {
+                cli::show_response(&state, target, view);
+            }
+        }
+        Err(()) => std::process::exit(1),
     }
 }

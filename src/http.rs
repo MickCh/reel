@@ -1,24 +1,35 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::model::{ResponseRecord, State};
 use crate::session::save_state;
 
+pub fn build_client(insecure: bool) -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .danger_accept_invalid_certs(insecure)
+        .build()
+        .expect("failed to build HTTP client")
+}
+
 // Execute the current state as an HTTP request.
 // Appends the response to state.responses and saves the session before writing to stdout
 // so a broken pipe (e.g. `reel send | head -5`) never prevents persistence.
-// Returns false on failure so the caller can abort a chain.
-pub fn execute(state: &mut State, source: Option<&str>) -> bool {
+// Returns Ok(status_code) on success, Err(()) on network/connection failure.
+pub fn execute(
+    client: &reqwest::blocking::Client,
+    state: &mut State,
+    source: Option<&str>,
+) -> Result<u16, ()> {
     let url = match &state.url {
         Some(u) => u.clone(),
         None => {
             eprintln!("error: URL not set (use: reel url <URL>)");
-            return false;
+            return Err(());
         }
     };
 
     let method = state.method.as_deref().unwrap_or("GET").to_uppercase();
-
-    let client = reqwest::blocking::Client::new();
 
     let req_builder = match method.as_str() {
         "GET" => client.get(&url),
@@ -27,10 +38,13 @@ pub fn execute(state: &mut State, source: Option<&str>) -> bool {
         "PATCH" => client.patch(&url),
         "DELETE" => client.delete(&url),
         "HEAD" => client.head(&url),
-        other => {
-            eprintln!("error: unknown method '{}'", other);
-            return false;
-        }
+        other => match reqwest::Method::from_bytes(other.as_bytes()) {
+            Ok(m) => client.request(m, &url),
+            Err(_) => {
+                eprintln!("error: invalid HTTP method '{}'", other);
+                return Err(());
+            }
+        },
     };
 
     let req_builder = state
@@ -48,11 +62,19 @@ pub fn execute(state: &mut State, source: Option<&str>) -> bool {
             let status = resp.status();
             eprintln!("{} {}", status.as_u16(), status.canonical_reason().unwrap_or(""));
 
-            let resp_headers: HashMap<String, String> = resp
-                .headers()
-                .iter()
-                .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
-                .collect();
+            // Duplicate header names are joined with ", " per RFC 7230.
+            let mut resp_headers: HashMap<String, String> = HashMap::new();
+            for (k, v) in resp.headers().iter() {
+                if let Ok(v_str) = v.to_str() {
+                    let entry = resp_headers.entry(k.to_string()).or_default();
+                    if entry.is_empty() {
+                        *entry = v_str.to_string();
+                    } else {
+                        entry.push_str(", ");
+                        entry.push_str(v_str);
+                    }
+                }
+            }
 
             match resp.text() {
                 Ok(body) => {
@@ -64,17 +86,17 @@ pub fn execute(state: &mut State, source: Option<&str>) -> bool {
                     });
                     save_state(state);
                     print!("{}", body);
-                    true
+                    Ok(status.as_u16())
                 }
                 Err(e) => {
                     eprintln!("error reading response: {}", e);
-                    false
+                    Err(())
                 }
             }
         }
         Err(e) => {
             eprintln!("error: {}", e);
-            false
+            Err(())
         }
     }
 }

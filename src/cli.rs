@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::http::execute;
+use crate::http::{build_client, execute};
 use crate::model::{ResponseRecord, State};
-use crate::session::{save_state, session_path};
+use crate::session::{delete_session, save_state, session_path};
 use crate::template::apply_interpolation;
 
 pub enum ResponseTarget {
@@ -98,7 +98,7 @@ pub fn print_usage() {
     eprintln!("Usage: reel [COMMANDS...]");
     eprintln!();
     eprintln!("Commands (can be combined in a single invocation):");
-    eprintln!("  method <METHOD>        set HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD)");
+    eprintln!("  method <METHOD>        set HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, ...)");
     eprintln!("  url <URL>              set request URL");
     eprintln!("  header <KEY:VALUE>     add a header (KEY:VALUE or KEY VALUE)");
     eprintln!("  header-rm <KEY>        remove a header by name");
@@ -113,6 +113,8 @@ pub fn print_usage() {
     eprintln!("  reset                  clear the session state");
     eprintln!("  load <PATH>            load state from a JSON file");
     eprintln!("  save <PATH>            save current session state to a JSON file");
+    eprintln!("  fail                   exit with code 1 if the HTTP response status is 4xx or 5xx");
+    eprintln!("  --insecure             skip TLS certificate verification");
     eprintln!();
     eprintln!("Template interpolation in files loaded by 'then':");
     eprintln!("  ${{{{ status }}}}          HTTP status code of the previous response");
@@ -129,6 +131,7 @@ pub fn print_usage() {
     eprintln!("  reel response headers");
     eprintln!("  reel send then step2.json then step3.json");
     eprintln!("  reel responses");
+    eprintln!("  reel fail send  # exits 1 on 4xx/5xx");
 }
 
 pub struct ParseResult {
@@ -144,18 +147,23 @@ fn parse_response_view(args: &[String]) -> (ResponseView, usize) {
     }
 }
 
-pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
+pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, ()> {
     let mut modified = false;
     let mut do_show = false;
     let mut do_response: Option<(ResponseTarget, ResponseView)> = None;
+    let mut fail_on_error = false;
+
+    let insecure = args.iter().any(|a| a == "--insecure");
+    let client = build_client(insecure);
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "send" => {
                 state.responses.clear();
-                if !execute(state, None) {
-                    std::process::exit(1);
+                let status = execute(&client, state, None).map_err(|_| ())?;
+                if fail_on_error && status >= 400 {
+                    return Err(());
                 }
                 modified = false;
                 i += 1;
@@ -163,7 +171,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
             "then" => {
                 if i + 1 >= args.len() {
                     eprintln!("error: 'then' requires a file path");
-                    std::process::exit(1);
+                    return Err(());
                 }
                 let path_str = args[i + 1].clone();
                 let path = PathBuf::from(&path_str);
@@ -173,14 +181,14 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("error reading '{}': {}", path.display(), e);
-                        std::process::exit(1);
+                        return Err(());
                     }
                 };
                 let mut loaded: State = match serde_json::from_str(&content) {
                     Ok(s) => s,
                     Err(e) => {
                         eprintln!("error parsing '{}': {}", path.display(), e);
-                        std::process::exit(1);
+                        return Err(());
                     }
                 };
 
@@ -191,11 +199,12 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                     && let Err(e) = apply_interpolation(state, &prev)
                 {
                     eprintln!("error: {}", e);
-                    std::process::exit(1);
+                    return Err(());
                 }
 
-                if !execute(state, Some(&path_str)) {
-                    std::process::exit(1);
+                let status = execute(&client, state, Some(&path_str)).map_err(|_| ())?;
+                if fail_on_error && status >= 400 {
+                    return Err(());
                 }
                 modified = false;
                 i += 2;
@@ -232,8 +241,16 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
             }
             "reset" => {
                 *state = State::default();
-                modified = true;
-                println!("Session cleared.");
+                delete_session();
+                modified = false;
+                eprintln!("Session cleared.");
+                i += 1;
+            }
+            "fail" => {
+                fail_on_error = true;
+                i += 1;
+            }
+            "--insecure" => {
                 i += 1;
             }
             "method" => {
@@ -309,7 +326,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                     to_save.responses.clear();
                     let content = serde_json::to_string_pretty(&to_save).unwrap();
                     match fs::write(&path, content) {
-                        Ok(_) => println!("Request saved to: {}", path.display()),
+                        Ok(_) => eprintln!("Request saved to: {}", path.display()),
                         Err(e) => eprintln!("error writing '{}': {}", path.display(), e),
                     }
                     i += 2;
@@ -326,7 +343,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                             Ok(loaded) => {
                                 *state = loaded;
                                 modified = true;
-                                println!("Request loaded from: {}", path.display());
+                                eprintln!("Request loaded from: {}", path.display());
                             }
                             Err(e) => eprintln!("error parsing file: {}", e),
                         },
@@ -350,5 +367,5 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
         save_state(state);
     }
 
-    ParseResult { do_show, do_response }
+    Ok(ParseResult { do_show, do_response })
 }

@@ -25,7 +25,7 @@ Commands can be combined freely in a single invocation.
 
 | Command | Description |
 |---|---|
-| `method <METHOD>` | Set HTTP method (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`) |
+| `method <METHOD>` | Set HTTP method (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`, …) |
 | `url <URL>` | Set request URL |
 | `header <KEY:VALUE>` | Add a header (`KEY:VALUE` or `KEY VALUE`) |
 | `header-rm <KEY>` | Remove a header by name |
@@ -38,6 +38,8 @@ Commands can be combined freely in a single invocation.
 | `reset` | Clear all session state |
 | `load <PATH>` | Load state from a JSON file |
 | `save <PATH>` | Save current session state to a JSON file |
+| `fail` | Exit with code 1 if the HTTP response status is 4xx or 5xx |
+| `--insecure` | Skip TLS certificate verification |
 
 ## Usage examples
 
@@ -188,18 +190,20 @@ Sessions are stored as plain JSON and can be edited or version-controlled:
     "Authorization": "Bearer mytoken"
   },
   "body": "{\"name\": \"Alice\"}",
-  "last": {
-    "status": 201,
-    "headers": {
-      "content-type": "application/json",
-      "content-length": "42"
-    },
-    "body": "{\"id\": 1, \"name\": \"Alice\"}"
-  }
+  "responses": [
+    {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json",
+        "content-length": "42"
+      },
+      "body": "{\"id\": 1, \"name\": \"Alice\"}"
+    }
+  ]
 }
 ```
 
-The `last` field is written automatically after each `send` and can be omitted when creating preset files — it will be populated on first use.
+The `responses` array is written automatically after each `send` and can be omitted when creating preset files — it will be populated on first use.
 
 ## Dependencies
 
