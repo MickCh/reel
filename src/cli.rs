@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use crate::http::{build_client, execute};
+use crate::http::HttpClient;
 use crate::model::{ResponseRecord, State};
-use crate::session::{delete_session, load_preset, save_preset, save_state, session_path};
+use crate::session::{SessionStore, load_preset, save_preset};
 use crate::template::apply_interpolation;
 
 fn format_status(code: u16) -> String {
@@ -72,7 +72,7 @@ fn format_status(code: u16) -> String {
         _ => "",
     };
     if reason.is_empty() {
-        format!("{}", code)
+        code.to_string()
     } else {
         format!("{} {}", code, reason)
     }
@@ -90,8 +90,35 @@ pub enum ResponseView {
     Headers,
 }
 
-pub fn show_state(state: &State) {
-    eprintln!("Session: {}", session_path().display());
+pub enum Command {
+    Method(String),
+    Url(String),
+    Header(String, String),
+    HeaderRm(String),
+    HeaderRmAll,
+    Body(String),
+    Send,
+    Then(PathBuf),
+    Show,
+    Response(ResponseTarget, ResponseView),
+    Reset,
+    Save(PathBuf),
+    Load(PathBuf),
+}
+
+pub struct GlobalFlags {
+    pub insecure: bool,
+    pub fail_on_error: bool,
+    pub dry_run: bool,
+}
+
+pub struct ParseResult {
+    pub do_show: bool,
+    pub do_response: Option<(ResponseTarget, ResponseView)>,
+}
+
+pub fn show_state(state: &State, session: &dyn SessionStore) {
+    eprintln!("Session: {}", session.path().display());
     eprintln!(
         "  method  {}",
         state.method.as_deref().unwrap_or("(not set)")
@@ -238,11 +265,6 @@ fn print_dry_run(state: &State) {
     }
 }
 
-pub struct ParseResult {
-    pub do_show: bool,
-    pub do_response: Option<(ResponseTarget, ResponseView)>,
-}
-
 fn parse_response_view(args: &[String]) -> (ResponseView, usize) {
     match args.first().map(String::as_str) {
         Some("body") => (ResponseView::Body, 1),
@@ -269,42 +291,18 @@ fn parse_response_target(args: &[String]) -> Result<(ResponseTarget, usize), ()>
     }
 }
 
-pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, ()> {
-    let mut modified = false;
-    let mut do_show = false;
-    let mut do_response: Option<(ResponseTarget, ResponseView)> = None;
-
+pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
     let insecure = args.iter().any(|a| a == "--insecure" || a == "insecure");
     let fail_on_error = args.iter().any(|a| a == "fail");
     let dry_run = args.iter().any(|a| a == "--dry-run" || a == "dry-run");
-    let mut client: Option<reqwest::blocking::Client> = None;
+    let flags = GlobalFlags { insecure, fail_on_error, dry_run };
 
+    let mut commands = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "send" => {
-                if dry_run {
-                    print_dry_run(state);
-                    i += 1;
-                    continue;
-                }
-                let had_responses = !state.responses.is_empty();
-                state.responses.clear();
-                let c = client.get_or_insert_with(|| build_client(insecure));
-                let record = execute(c, state, None)?;
-                state.responses.push(record);
-                save_state(state);
-                let last = state.responses.last().unwrap();
-                if had_responses {
-                    eprintln!("< {} (previous responses cleared)", format_status(last.status));
-                } else {
-                    eprintln!("< {}", format_status(last.status));
-                }
-                print!("{}", last.body);
-                if fail_on_error && last.status >= 400 {
-                    return Err(());
-                }
-                modified = false;
+                commands.push(Command::Send);
                 i += 1;
             }
             "then" => {
@@ -312,72 +310,30 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     eprintln!("error: 'then' requires a file path");
                     return Err(());
                 }
-                let path_str = args[i + 1].clone();
-                let path = PathBuf::from(&path_str);
-                let prev_responses = state.responses.clone();
-
-                let mut loaded = load_preset(&path)?;
-                loaded.responses = prev_responses;
-                *state = loaded;
-
-                if let Some(prev) = state.responses.last().cloned()
-                    && let Err(e) = apply_interpolation(state, &prev)
-                {
-                    eprintln!("error in '{}': {}", path_str, e);
-                    return Err(());
-                }
-
-                if dry_run {
-                    eprintln!("(dry-run: {})", path_str);
-                    print_dry_run(state);
-                    i += 2;
-                    continue;
-                }
-
-                let c = client.get_or_insert_with(|| build_client(insecure));
-                let record = execute(c, state, Some(&path_str))?;
-                state.responses.push(record);
-                save_state(state);
-                let last = state.responses.last().unwrap();
-                eprintln!("< {}", format_status(last.status));
-                print!("{}", last.body);
-                if fail_on_error && last.status >= 400 {
-                    return Err(());
-                }
-                modified = false;
+                commands.push(Command::Then(PathBuf::from(&args[i + 1])));
                 i += 2;
             }
             "show" => {
-                do_show = true;
+                commands.push(Command::Show);
                 i += 1;
             }
             "response" => {
                 let rest = &args[i + 1..];
                 let (target, target_consumed) = parse_response_target(rest)?;
                 let (view, view_consumed) = parse_response_view(&rest[target_consumed..]);
-                do_response = Some((target, view));
+                commands.push(Command::Response(target, view));
                 i += 1 + target_consumed + view_consumed;
             }
             "reset" => {
-                *state = State::default();
-                delete_session();
-                modified = false;
-                eprintln!("Session cleared.");
+                commands.push(Command::Reset);
                 i += 1;
             }
-            "fail" => {
-                i += 1;
-            }
-            "--insecure" | "insecure" => {
-                i += 1;
-            }
-            "--dry-run" | "dry-run" => {
+            "fail" | "--insecure" | "insecure" | "--dry-run" | "dry-run" => {
                 i += 1;
             }
             "method" => {
                 if i + 1 < args.len() {
-                    state.method = Some(args[i + 1].to_uppercase());
-                    modified = true;
+                    commands.push(Command::Method(args[i + 1].to_uppercase()));
                     i += 2;
                 } else {
                     eprintln!("error: 'method' requires a value");
@@ -386,8 +342,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             }
             "url" => {
                 if i + 1 < args.len() {
-                    state.url = Some(args[i + 1].clone());
-                    modified = true;
+                    commands.push(Command::Url(args[i + 1].clone()));
                     i += 2;
                 } else {
                     eprintln!("error: 'url' requires a value");
@@ -397,23 +352,20 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             "header" => {
                 if i + 1 >= args.len() {
                     eprintln!("error: 'header' requires KEY:VALUE or KEY VALUE");
-                    i += 1;
-                    continue;
+                    return Err(());
                 }
                 let next = &args[i + 1];
                 if let Some(pos) = next.find(':') {
-                    let key = next[..pos].trim().to_string();
+                    let key = next[..pos].trim().to_lowercase();
                     if key.is_empty() {
                         eprintln!("error: header key cannot be empty (use KEY:VALUE or KEY VALUE)");
                         return Err(());
                     }
                     let val = next[pos + 1..].trim().to_string();
-                    state.headers.insert(key, val);
-                    modified = true;
+                    commands.push(Command::Header(key, val));
                     i += 2;
                 } else if i + 2 < args.len() {
-                    state.headers.insert(next.clone(), args[i + 2].clone());
-                    modified = true;
+                    commands.push(Command::Header(next.to_lowercase(), args[i + 2].clone()));
                     i += 3;
                 } else {
                     eprintln!("error: 'header' requires KEY:VALUE or KEY VALUE");
@@ -421,18 +373,12 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 }
             }
             "header-rm-all" => {
-                state.headers.clear();
-                modified = true;
+                commands.push(Command::HeaderRmAll);
                 i += 1;
             }
             "header-rm" => {
                 if i + 1 < args.len() {
-                    let key = &args[i + 1];
-                    if state.headers.remove(key).is_some() {
-                        modified = true;
-                    } else {
-                        eprintln!("warning: header '{}' not found", key);
-                    }
+                    commands.push(Command::HeaderRm(args[i + 1].to_lowercase()));
                     i += 2;
                 } else {
                     eprintln!("error: 'header-rm' requires a header name");
@@ -441,8 +387,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             }
             "body" => {
                 if i + 1 < args.len() {
-                    state.body = Some(args[i + 1].clone());
-                    modified = true;
+                    commands.push(Command::Body(args[i + 1].clone()));
                     i += 2;
                 } else {
                     eprintln!("error: 'body' requires a value");
@@ -451,22 +396,16 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             }
             "save" => {
                 if i + 1 < args.len() {
-                    let path = PathBuf::from(&args[i + 1]);
-                    if save_preset(state, &path).is_ok() {
-                        eprintln!("Request saved to: {}", path.display());
-                    }
+                    commands.push(Command::Save(PathBuf::from(&args[i + 1])));
                     i += 2;
                 } else {
                     eprintln!("error: 'save' requires a path");
-                    i += 1;
+                    return Err(());
                 }
             }
             "load" => {
                 if i + 1 < args.len() {
-                    let path = PathBuf::from(&args[i + 1]);
-                    *state = load_preset(&path)?;
-                    modified = true;
-                    eprintln!("Request loaded from: {}", path.display());
+                    commands.push(Command::Load(PathBuf::from(&args[i + 1])));
                     i += 2;
                 } else {
                     eprintln!("error: 'load' requires a path");
@@ -480,9 +419,145 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             }
         }
     }
+    Ok((commands, flags))
+}
+
+pub fn run_commands(
+    commands: Vec<Command>,
+    flags: &GlobalFlags,
+    state: &mut State,
+    http: &dyn HttpClient,
+    session: &dyn SessionStore,
+) -> Result<ParseResult, ()> {
+    let mut modified = false;
+    let mut do_show = false;
+    let mut do_response: Option<(ResponseTarget, ResponseView)> = None;
+
+    for cmd in commands {
+        match cmd {
+            Command::Send => {
+                if flags.dry_run {
+                    print_dry_run(state);
+                    continue;
+                }
+                let had_responses = !state.responses.is_empty();
+                state.responses.clear();
+                let record = http.execute(state, None)?;
+                state.responses.push(record);
+                session.save(state);
+                let last = state.responses.last().unwrap();
+                if had_responses {
+                    eprintln!("< {} (previous responses cleared)", format_status(last.status));
+                } else {
+                    eprintln!("< {}", format_status(last.status));
+                }
+                print!("{}", last.body);
+                if flags.fail_on_error && last.status >= 400 {
+                    return Err(());
+                }
+                modified = false;
+            }
+            Command::Then(path) => {
+                let path_str = path.to_string_lossy().into_owned();
+                let prev_responses = state.responses.clone();
+
+                let mut loaded = load_preset(&path)?;
+                loaded.responses = prev_responses;
+                *state = loaded;
+
+                if state.responses.is_empty() {
+                    let has_template = state.url.as_deref().is_some_and(|u| u.contains("${{"))
+                        || state.body.as_deref().is_some_and(|b| b.contains("${{"))
+                        || state.headers.values().any(|v| v.contains("${{"));
+                    if has_template {
+                        eprintln!(
+                            "error: '{}' uses template expressions but there is no previous response",
+                            path_str
+                        );
+                        return Err(());
+                    }
+                } else {
+                    let prev = state.responses.last().cloned().unwrap();
+                    if let Err(e) = apply_interpolation(state, &prev) {
+                        eprintln!("error in '{}': {}", path_str, e);
+                        return Err(());
+                    }
+                }
+
+                if flags.dry_run {
+                    eprintln!("(dry-run: {})", path_str);
+                    print_dry_run(state);
+                    continue;
+                }
+
+                let record = http.execute(state, Some(&path_str))?;
+                state.responses.push(record);
+                session.save(state);
+                let last = state.responses.last().unwrap();
+                eprintln!("< {}", format_status(last.status));
+                print!("{}", last.body);
+                if flags.fail_on_error && last.status >= 400 {
+                    return Err(());
+                }
+                modified = false;
+            }
+            Command::Show => {
+                do_show = true;
+            }
+            Command::Response(target, view) => {
+                do_response = Some((target, view));
+            }
+            Command::Reset => {
+                *state = State::default();
+                session.delete();
+                modified = false;
+                eprintln!("Session cleared.");
+            }
+            Command::Method(m) => {
+                state.method = Some(m);
+                modified = true;
+            }
+            Command::Url(u) => {
+                state.url = Some(u);
+                modified = true;
+            }
+            Command::Header(key, val) => {
+                state.headers.insert(key, val);
+                modified = true;
+            }
+            Command::HeaderRm(key) => {
+                // Case-insensitive: scan for a matching key regardless of casing in stored state.
+                let found = state.headers.keys().find(|k| k.to_lowercase() == key).cloned();
+                if let Some(k) = found {
+                    state.headers.remove(&k);
+                    modified = true;
+                } else {
+                    eprintln!("warning: header '{}' not found", key);
+                }
+            }
+            Command::HeaderRmAll => {
+                state.headers.clear();
+                modified = true;
+            }
+            Command::Body(b) => {
+                state.body = Some(b);
+                modified = true;
+            }
+            Command::Save(path) => {
+                if save_preset(state, &path).is_ok() {
+                    eprintln!("Request saved to: {}", path.display());
+                }
+            }
+            Command::Load(path) => {
+                *state = load_preset(&path)?;
+                modified = true;
+                eprintln!("Request loaded from: {}", path.display());
+            }
+        }
+    }
 
     if modified {
-        save_state(state);
+        session.save(state);
     }
 
     Ok(ParseResult { do_show, do_response })

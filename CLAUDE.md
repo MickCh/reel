@@ -11,17 +11,40 @@ Five modules under `src/`:
 | File | Responsibility |
 |---|---|
 | `main.rs` | Entry point — wires modules together |
-| `model.rs` | `State`, `LastResponse` structs (pure data, no I/O) |
-| `session.rs` | Session persistence (`get_ppid`, `session_path`, `load_state`, `save_state`, `delete_session`) |
+| `model.rs` | `State`, `ResponseRecord` structs (pure data, no I/O) |
+| `session.rs` | `SessionStore` trait + `FileSessionStore` impl; `load_preset`/`save_preset` free functions |
 | `template.rs` | Template interpolation engine (`${{ expr }}`) |
-| `http.rs` | HTTP execution (`build_client`, `execute`) |
-| `cli.rs` | Argument parser, display functions (`show_state`, `show_response`, `print_usage`) |
+| `http.rs` | `HttpClient` trait + `ReqwestClient` impl |
+| `cli.rs` | `Command` enum, `parse_args`, `run_commands`, display functions |
 
 Dependency direction: `cli` → `http`/`template`/`session` → `model`. No module depends on a layer above it.
 
+### Key traits
+
+**`http::HttpClient`** — abstracts HTTP execution. `run_commands` receives `&dyn HttpClient`, making it testable without real network calls.
+
+```rust
+pub trait HttpClient {
+    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord, ()>;
+}
+```
+
+**`session::SessionStore`** — abstracts session persistence. `run_commands` receives `&dyn SessionStore`.
+
+```rust
+pub trait SessionStore {
+    fn load(&self) -> State;
+    fn save(&self, state: &State);
+    fn delete(&self);
+    fn path(&self) -> &Path;
+}
+```
+
+`main.rs` constructs the concrete implementations (`ReqwestClient`, `FileSessionStore`) and passes them in.
+
 ### Session identification
 
-Uses the parent shell PID (`PPid` from `/proc/self/status`) as the session key. State is stored in `~/.reel/sessions/<ppid>.json`. This is Linux-specific; porting to macOS/Windows would require a different PPID lookup.
+Uses the parent shell PID (`PPid` from `/proc/self/status`) as the session key. State is stored in `~/.reel/sessions/<ppid>.json`. This is Linux-specific; porting to macOS/Windows would require a different PPID lookup. The PPID is read once via `OnceLock<u32>` and cached for the process lifetime.
 
 ### Data model
 
@@ -29,7 +52,7 @@ Uses the parent shell PID (`PPid` from `/proc/self/status`) as the session key. 
 struct State {
     method:    Option<String>,
     url:       Option<String>,
-    headers:   HashMap<String, String>,
+    headers:   HashMap<String, String>,   // keys stored as-is from session/preset files
     body:      Option<String>,
     responses: Vec<ResponseRecord>,   // populated by send/then, never set by the user
 }
@@ -46,20 +69,21 @@ struct ResponseRecord {
 
 ### State lifecycle
 
-1. Load `~/.reel/sessions/<ppid>.json` (or start with `State::default()`)
-2. Process all CLI arguments left-to-right, mutating `state` in memory:
+1. `FileSessionStore::new()` computes the session path (PPID-based); `session.load()` reads it (or returns `State::default()`)
+2. `parse_args` processes all CLI arguments left-to-right and returns `(Vec<Command>, GlobalFlags)`; no I/O here
+3. `run_commands` executes commands in order, mutating `state`:
    - `load <PATH>` — replaces `state` wholesale from a JSON file
-   - `save <PATH>` — writes current in-memory `state` to a file (does not affect the session file)
-   - `reset` — replaces `state` with `State::default()` and deletes the session file
-   - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`
-   - `header-rm <KEY>` — removes one entry from `state.headers`; warns if the key is absent
+   - `save <PATH>` — writes current in-memory `state` to a preset file (no `responses` field)
+   - `reset` — replaces `state` with `State::default()` and calls `session.delete()`
+   - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`; key normalised to lowercase
+   - `header-rm <KEY>` — removes one entry case-insensitively; warns if absent
    - `method`, `url`, `body` — overwrite the respective field
-   - `send` — clears `state.responses`, executes immediately inline; calls `save_state` before printing body
-   - `then <PATH>` — loads a preset file, carries `state.responses` forward, applies template interpolation from the last response, executes immediately inline and appends to `state.responses`; aborts the whole chain on failure
-3. If any mutation occurred without a following `send`/`then`, persist `state` at end of loop
-4. Run `show` and/or `response` — always after the main loop, in that order
+   - `send` — clears `state.responses`, executes via `http.execute()`; calls `session.save()` before printing body
+   - `then <PATH>` — loads a preset file, carries `state.responses` forward, applies template interpolation from the last response, executes via `http.execute()` and appends to `state.responses`; aborts the whole chain on failure; errors if preset contains `${{` expressions but there is no previous response
+4. If any mutation occurred without a following `send`/`then`, `session.save()` is called at end
+5. `show` and `response` (deferred during parsing) run after all commands, in that order
 
-`send` calls `save_state` itself (appending to `state.responses`) **before** printing the body, so a broken pipe (e.g. `reel send | head -5`) never prevents the response from being persisted.
+`session.save()` is called inside the `Send`/`Then` branches **before** any stdout write — broken-pipe safety (e.g. `reel send | head -5`).
 
 `response` reads `state.responses` from the already-loaded in-memory state; it never triggers an additional disk write.
 
@@ -74,19 +98,19 @@ Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `
 | `body.<dot.path>` | Dot-path into the JSON body (e.g. `body.access.token`, `body.items.0.id`) |
 | `headers.<name>` | Response header value (e.g. `headers.content-type`) |
 
-If a placeholder cannot be resolved (missing key, non-JSON body, unclosed `${{`), the chain aborts immediately with an error.
+If a placeholder cannot be resolved (missing key, non-JSON body, unclosed `${{`), the chain aborts immediately with an error. If a preset contains any `${{` but there is no previous response, `then` errors immediately rather than silently treating the placeholder as a literal string.
 
 ### Argument parsing
 
-No external parser (no `clap`). A hand-written `while` loop over `args` processes token pairs. This keeps the UX simple: `reel method GET url https://example.com send` reads naturally left-to-right.
+No external parser (no `clap`). `parse_args` is a hand-written `while` loop over `args` that returns `Vec<Command>`. This keeps the UX simple: `reel method GET url https://example.com send` reads naturally left-to-right.
 
-`send` and `then` execute inline during the loop (not deferred). `show` and `response` are deferred and run once after the loop.
+`show` and `response` are deferred — `parse_args` records them in the `Command` stream and `run_commands` sets flags for them, running them after all other commands complete.
 
-The `response` command peeks at the next token(s) to consume an optional `all`/index and/or `body`/`headers` modifier. Any other token is left in place for the main loop to process.
+The `response` command peeks at the next token(s) to consume an optional `all`/index and/or `body`/`headers` modifier.
 
-`fail` and `--insecure` are pre-scanned before the loop and apply globally regardless of position. `fail` causes exit with code 1 if any `send` or `then` receives a 4xx/5xx response.
+`fail`, `--insecure`, and `--dry-run` are pre-scanned before the loop and returned as `GlobalFlags`; they apply globally regardless of position. Their tokens are consumed and not added to `Vec<Command>`.
 
-`parse_and_run` returns `Result<ParseResult, ()>`. On `Err(())`, `main` calls `std::process::exit(1)`. All diagnostic output (`show`, reset, load confirmations, errors) goes to stderr so it never pollutes piped output. `response headers` writes header data to stdout (it is data, not a diagnostic).
+`parse_args` returns `Result<(Vec<Command>, GlobalFlags), ()>`. `run_commands` returns `Result<ParseResult, ()>`. On `Err(())`, `main` calls `std::process::exit(1)`. All diagnostic output goes to stderr so it never pollutes piped output. `response headers` writes header data to stdout (it is data, not a diagnostic).
 
 ## Dependencies
 
@@ -134,10 +158,12 @@ Likely next additions and where to put them:
 - **Auth shorthand** (`reel auth bearer <token>`) — sugar over `header Authorization "Bearer <token>"`
 - **Verbose mode** — print full request details before sending; flag in `State` or a CLI-only bool
 - **Session list/switch** — list `~/.reel/sessions/`, let user pick by number or name
+- **Mock HttpClient / SessionStore** — inject test doubles in `run_commands` for integration tests without network or disk
 
 ## Constraints to keep
 
 - No async runtime. `reqwest::blocking` is deliberate — a CLI tool doesn't benefit from async.
 - No `clap`. The positional key-value syntax is the UX; a flag-based parser would break it.
 - Status on stderr, body on stdout. Do not change this — it enables `reel send | jq .`.
-- `save_state` inside `http::execute` must come before any stdout write — broken-pipe safety.
+- `session.save()` inside `Send`/`Then` command branches must come before any stdout write — broken-pipe safety.
+- `parse_args` must stay pure (no I/O). All I/O belongs in `run_commands` via the injected traits.
