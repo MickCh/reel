@@ -784,6 +784,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

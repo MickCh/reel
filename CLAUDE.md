@@ -44,7 +44,17 @@ pub trait SessionStore {
 
 ### Session identification
 
-Uses the parent shell PID (`PPid` from `/proc/self/status`) as the session key. State is stored in `~/.reel/sessions/<ppid>.json`. This is Linux-specific; porting to macOS/Windows would require a different PPID lookup. The PPID is read once via `OnceLock<u32>` and cached for the process lifetime.
+Uses the parent shell PID as the session key. State is stored in `~/.reel/sessions/<ppid>.json`. The PPID is read once via `OnceLock<u32>` and cached for the process lifetime.
+
+Platform-specific PPID lookup is gated with `#[cfg(...)]` inside `get_ppid()` in `session.rs`:
+
+| Platform | Mechanism |
+|---|---|
+| Linux | `PPid:` line from `/proc/self/status` |
+| Windows | `CreateToolhelp32Snapshot` + `Process32FirstW` from `windows-sys` |
+| macOS / other | Falls back to `0` with a warning (all invocations share one session) |
+
+The `SessionStore` trait itself is platform-neutral; only the internal `get_ppid()` helper is gated.
 
 ### Data model
 
@@ -119,6 +129,7 @@ The `response` command peeks at the next token(s) to consume an optional `all`/i
 | `reqwest` (blocking) | HTTP client; blocking avoids async complexity for a CLI |
 | `serde` + `serde_json` | State serialization |
 | `dirs` | Cross-platform home directory |
+| `windows-sys` (Windows only) | PPID lookup via `CreateToolhelp32Snapshot` |
 
 ## Build & test
 
