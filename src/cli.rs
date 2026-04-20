@@ -191,6 +191,24 @@ fn parse_response_view(args: &[String]) -> (ResponseView, usize) {
     }
 }
 
+fn parse_response_target(args: &[String]) -> Result<(ResponseTarget, usize), ()> {
+    match args.first().map(String::as_str) {
+        Some("all") => Ok((ResponseTarget::All, 1)),
+        Some(token) if token != "body" && token != "headers" => {
+            if let Ok(n) = token.parse::<usize>() {
+                if n == 0 {
+                    eprintln!("error: response indices start at 1");
+                    return Err(());
+                }
+                Ok((ResponseTarget::Index(n - 1), 1))
+            } else {
+                Ok((ResponseTarget::Last, 0))
+            }
+        }
+        _ => Ok((ResponseTarget::Last, 0)),
+    }
+}
+
 pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, ()> {
     let mut modified = false;
     let mut do_show = false;
@@ -257,29 +275,10 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             }
             "response" => {
                 let rest = &args[i + 1..];
-                let (target, view, consumed) = match rest.first().map(String::as_str) {
-                    Some("body") => (ResponseTarget::Last, ResponseView::Body, 1),
-                    Some("headers") => (ResponseTarget::Last, ResponseView::Headers, 1),
-                    Some("all") => {
-                        let (view, extra) = parse_response_view(&args[i + 2..]);
-                        (ResponseTarget::All, view, 1 + extra)
-                    }
-                    Some(token) => {
-                        if let Ok(n) = token.parse::<usize>() {
-                            if n == 0 {
-                                eprintln!("error: response indices start at 1");
-                                return Err(());
-                            }
-                            let (view, extra) = parse_response_view(&args[i + 2..]);
-                            (ResponseTarget::Index(n - 1), view, 1 + extra)
-                        } else {
-                            (ResponseTarget::Last, ResponseView::Full, 0)
-                        }
-                    }
-                    None => (ResponseTarget::Last, ResponseView::Full, 0),
-                };
+                let (target, target_consumed) = parse_response_target(rest)?;
+                let (view, view_consumed) = parse_response_view(&rest[target_consumed..]);
                 do_response = Some((target, view));
-                i += 1 + consumed;
+                i += 1 + target_consumed + view_consumed;
             }
             "reset" => {
                 *state = State::default();
@@ -367,8 +366,9 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             "save" => {
                 if i + 1 < args.len() {
                     let path = PathBuf::from(&args[i + 1]);
-                    save_preset(state, &path);
-                    eprintln!("Request saved to: {}", path.display());
+                    if save_preset(state, &path).is_ok() {
+                        eprintln!("Request saved to: {}", path.display());
+                    }
                     i += 2;
                 } else {
                     eprintln!("error: 'save' requires a path");

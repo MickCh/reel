@@ -58,7 +58,6 @@ pub fn execute(
 
     let resp = req_builder.send().map_err(|e| eprintln!("error: {}", e))?;
     let status = resp.status();
-    eprintln!("{} {}", status.as_u16(), status.canonical_reason().unwrap_or(""));
 
     // Duplicate header names are joined with ", " per RFC 7230.
     let mut resp_headers: HashMap<String, String> = HashMap::new();

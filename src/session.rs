@@ -28,39 +28,32 @@ pub fn session_path() -> PathBuf {
         .join(format!("{}.json", get_ppid()))
 }
 
+fn try_load(path: &std::path::Path) -> Result<State, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("could not read session file '{}': {}", path.display(), e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("session file '{}' is corrupted ({}); starting with empty state", path.display(), e))
+}
+
 pub fn load_state() -> State {
     let path = session_path();
     if !path.exists() {
         return State::default();
     }
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("warning: could not read session file '{}': {}", path.display(), e);
-            return State::default();
-        }
-    };
-    match serde_json::from_str(&content) {
+    match try_load(&path) {
         Ok(state) => state,
         Err(e) => {
-            eprintln!(
-                "warning: session file '{}' is corrupted ({}); starting with empty state",
-                path.display(),
-                e
-            );
+            eprintln!("warning: {}", e);
             State::default()
         }
     }
 }
 
-pub fn save_preset(state: &State, path: &Path) {
+pub fn save_preset(state: &State, path: &Path) -> Result<(), ()> {
     let mut to_save = state.clone();
     to_save.responses.clear();
     let content = serde_json::to_string_pretty(&to_save).unwrap();
-    match fs::write(path, content) {
-        Ok(_) => eprintln!("Request saved to: {}", path.display()),
-        Err(e) => eprintln!("error writing '{}': {}", path.display(), e),
-    }
+    fs::write(path, content).map_err(|e| eprintln!("error writing '{}': {}", path.display(), e))
 }
 
 pub fn load_preset(path: &Path) -> Result<State, ()> {
