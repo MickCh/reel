@@ -5,6 +5,40 @@ use crate::model::{ResponseRecord, State};
 use crate::session::{delete_session, load_preset, save_preset, save_state, session_path};
 use crate::template::apply_interpolation;
 
+fn format_status(code: u16) -> String {
+    let reason = match code {
+        100 => "Continue",
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        206 => "Partial Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        410 => "Gone",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "",
+    };
+    if reason.is_empty() {
+        format!("{}", code)
+    } else {
+        format!("{} {}", code, reason)
+    }
+}
+
 pub enum ResponseTarget {
     Last,
     Index(usize),
@@ -24,11 +58,16 @@ pub fn show_state(state: &State) {
         state.method.as_deref().unwrap_or("(not set)")
     );
     eprintln!("  url     {}", state.url.as_deref().unwrap_or("(not set)"));
-    for (k, v) in &state.headers {
+    let mut headers: Vec<_> = state.headers.iter().collect();
+    headers.sort_by_key(|(k, _)| k.as_str());
+    for (k, v) in headers {
         eprintln!("  header  {}: {}", k, v);
     }
     if let Some(body) = &state.body {
         eprintln!("  body    {}", body);
+    }
+    if !state.responses.is_empty() {
+        eprintln!("  responses  {} stored", state.responses.len());
     }
 }
 
@@ -41,7 +80,9 @@ fn show_single(r: &ResponseRecord, view: &ResponseView) {
         ResponseView::Body => print!("{}", r.body),
         ResponseView::Headers => {
             println!("{} — {}", r.status, source_label(r));
-            for (k, v) in &r.headers {
+            let mut headers: Vec<_> = r.headers.iter().collect();
+            headers.sort_by_key(|(k, _)| k.as_str());
+            for (k, v) in headers {
                 println!("{}: {}", k, v);
             }
         }
@@ -60,7 +101,7 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
             Some(r) => show_single(r, &view),
             None => eprintln!(
                 "error: response index {} out of range (have {})",
-                n,
+                n + 1,
                 state.responses.len()
             ),
         },
@@ -72,7 +113,7 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
                 for (i, r) in state.responses.iter().enumerate() {
                     if state.responses.len() > 1 {
                         let label = source_label(r);
-                        eprintln!("[{}] {}", i, label);
+                        eprintln!("[{}] {}", i + 1, label);
                     }
                     print!("{}", r.body);
                     if i + 1 < state.responses.len() {
@@ -83,8 +124,10 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
             ResponseView::Headers => {
                 for (i, r) in state.responses.iter().enumerate() {
                     let label = source_label(r);
-                    println!("[{}] {} — {}", i, r.status, label);
-                    for (k, v) in &r.headers {
+                    println!("[{}] {} — {}", i + 1, r.status, label);
+                    let mut headers: Vec<_> = r.headers.iter().collect();
+                    headers.sort_by_key(|(k, _)| k.as_str());
+                    for (k, v) in headers {
                         println!("  {}: {}", k, v);
                     }
                 }
@@ -94,6 +137,7 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
 }
 
 pub fn print_usage() {
+    eprintln!("reel {}", env!("CARGO_PKG_VERSION"));
     eprintln!("Usage: reel [COMMANDS...]");
     eprintln!();
     eprintln!("Commands (can be combined in a single invocation):");
@@ -107,12 +151,14 @@ pub fn print_usage() {
         "  then <PATH>            load next request from file (with template interpolation) and send it"
     );
     eprintln!("  show                   print the current session state");
-    eprintln!("  response [N|all] [body|headers]   show Nth response (default: last), or all; full JSON, body, or headers");
+    eprintln!("  response [N|all] [body|headers]   show Nth response (1-based, default: last), or all; full JSON, body, or headers");
     eprintln!("  reset                  clear the session state");
     eprintln!("  load <PATH>            load state from a JSON file");
     eprintln!("  save <PATH>            save current session state to a JSON file");
-    eprintln!("  fail                   exit with code 1 if the HTTP response status is 4xx or 5xx");
-    eprintln!("  --insecure             skip TLS certificate verification");
+    eprintln!("  fail                   exit with code 1 if any response is 4xx/5xx (position-independent)");
+    eprintln!("  insecure / --insecure  skip TLS certificate verification (position-independent)");
+    eprintln!("  -h / --help            show this help");
+    eprintln!("  -V / --version         show version");
     eprintln!();
     eprintln!("Template interpolation in files loaded by 'then':");
     eprintln!("  ${{{{ status }}}}          HTTP status code of the previous response");
@@ -150,7 +196,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
     let mut do_show = false;
     let mut do_response: Option<(ResponseTarget, ResponseView)> = None;
 
-    let insecure = args.iter().any(|a| a == "--insecure");
+    let insecure = args.iter().any(|a| a == "--insecure" || a == "insecure");
     let fail_on_error = args.iter().any(|a| a == "fail");
     let mut client: Option<reqwest::blocking::Client> = None;
 
@@ -164,6 +210,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 state.responses.push(record);
                 save_state(state);
                 let last = state.responses.last().unwrap();
+                eprintln!("< {}", format_status(last.status));
                 print!("{}", last.body);
                 if fail_on_error && last.status >= 400 {
                     return Err(());
@@ -196,6 +243,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 state.responses.push(record);
                 save_state(state);
                 let last = state.responses.last().unwrap();
+                eprintln!("< {}", format_status(last.status));
                 print!("{}", last.body);
                 if fail_on_error && last.status >= 400 {
                     return Err(());
@@ -218,8 +266,12 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     }
                     Some(token) => {
                         if let Ok(n) = token.parse::<usize>() {
+                            if n == 0 {
+                                eprintln!("error: response indices start at 1");
+                                return Err(());
+                            }
                             let (view, extra) = parse_response_view(&args[i + 2..]);
-                            (ResponseTarget::Index(n), view, 1 + extra)
+                            (ResponseTarget::Index(n - 1), view, 1 + extra)
                         } else {
                             (ResponseTarget::Last, ResponseView::Full, 0)
                         }
@@ -239,7 +291,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             "fail" => {
                 i += 1;
             }
-            "--insecure" => {
+            "--insecure" | "insecure" => {
                 i += 1;
             }
             "method" => {
@@ -271,6 +323,10 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 let next = &args[i + 1];
                 if let Some(pos) = next.find(':') {
                     let key = next[..pos].trim().to_string();
+                    if key.is_empty() {
+                        eprintln!("error: header key cannot be empty (use KEY:VALUE or KEY VALUE)");
+                        return Err(());
+                    }
                     let val = next[pos + 1..].trim().to_string();
                     state.headers.insert(key, val);
                     modified = true;
@@ -312,6 +368,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 if i + 1 < args.len() {
                     let path = PathBuf::from(&args[i + 1]);
                     save_preset(state, &path);
+                    eprintln!("Request saved to: {}", path.display());
                     i += 2;
                 } else {
                     eprintln!("error: 'save' requires a path");

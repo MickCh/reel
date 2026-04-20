@@ -9,8 +9,13 @@ use std::env;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    if args.is_empty() {
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h" || a == "help") {
         cli::print_usage();
+        return;
+    }
+
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        eprintln!("reel {}", env!("CARGO_PKG_VERSION"));
         return;
     }
 
