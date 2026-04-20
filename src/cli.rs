@@ -8,28 +8,67 @@ use crate::template::apply_interpolation;
 fn format_status(code: u16) -> String {
     let reason = match code {
         100 => "Continue",
+        101 => "Switching Protocols",
+        102 => "Processing",
+        103 => "Early Hints",
         200 => "OK",
         201 => "Created",
         202 => "Accepted",
+        203 => "Non-Authoritative Information",
         204 => "No Content",
+        205 => "Reset Content",
         206 => "Partial Content",
+        207 => "Multi-Status",
+        208 => "Already Reported",
+        226 => "IM Used",
+        300 => "Multiple Choices",
         301 => "Moved Permanently",
         302 => "Found",
+        303 => "See Other",
         304 => "Not Modified",
+        305 => "Use Proxy",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
         400 => "Bad Request",
         401 => "Unauthorized",
+        402 => "Payment Required",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        406 => "Not Acceptable",
+        407 => "Proxy Authentication Required",
+        408 => "Request Timeout",
         409 => "Conflict",
         410 => "Gone",
-        422 => "Unprocessable Entity",
+        411 => "Length Required",
+        412 => "Precondition Failed",
+        413 => "Content Too Large",
+        414 => "URI Too Long",
+        415 => "Unsupported Media Type",
+        416 => "Range Not Satisfiable",
+        417 => "Expectation Failed",
+        418 => "I'm a Teapot",
+        421 => "Misdirected Request",
+        422 => "Unprocessable Content",
+        423 => "Locked",
+        424 => "Failed Dependency",
+        425 => "Too Early",
+        426 => "Upgrade Required",
+        428 => "Precondition Required",
         429 => "Too Many Requests",
+        431 => "Request Header Fields Too Large",
+        451 => "Unavailable For Legal Reasons",
         500 => "Internal Server Error",
         501 => "Not Implemented",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
         504 => "Gateway Timeout",
+        505 => "HTTP Version Not Supported",
+        506 => "Variant Also Negotiates",
+        507 => "Insufficient Storage",
+        508 => "Loop Detected",
+        510 => "Not Extended",
+        511 => "Network Authentication Required",
         _ => "",
     };
     if reason.is_empty() {
@@ -145,8 +184,10 @@ pub fn print_usage() {
     eprintln!("  url <URL>              set request URL");
     eprintln!("  header <KEY:VALUE>     add a header (KEY:VALUE or KEY VALUE)");
     eprintln!("  header-rm <KEY>        remove a header by name");
+    eprintln!("  header-rm-all          remove all headers");
     eprintln!("  body <BODY>            set request body");
     eprintln!("  send                   send the current request");
+    eprintln!("  --dry-run              print the request that would be sent, without sending it (position-independent)");
     eprintln!(
         "  then <PATH>            load next request from file (with template interpolation) and send it"
     );
@@ -176,6 +217,21 @@ pub fn print_usage() {
     eprintln!("  reel send then step2.json then step3.json");
     eprintln!("  reel response all");
     eprintln!("  reel fail send  # exits 1 on 4xx/5xx");
+    eprintln!();
+    eprintln!("Note: status messages and confirmations are written to stderr; response body goes to stdout.");
+    eprintln!("      This means 'reel send | jq .' works correctly even when confirmations are visible.");
+}
+
+fn print_dry_run(state: &State) {
+    eprintln!("> {} {}", state.method.as_deref().unwrap_or("GET"), state.url.as_deref().unwrap_or("(not set)"));
+    let mut headers: Vec<_> = state.headers.iter().collect();
+    headers.sort_by_key(|(k, _)| k.as_str());
+    for (k, v) in headers {
+        eprintln!(">   {}: {}", k, v);
+    }
+    if let Some(body) = &state.body {
+        eprintln!(">   {}", body);
+    }
 }
 
 pub struct ParseResult {
@@ -216,19 +272,30 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
 
     let insecure = args.iter().any(|a| a == "--insecure" || a == "insecure");
     let fail_on_error = args.iter().any(|a| a == "fail");
+    let dry_run = args.iter().any(|a| a == "--dry-run" || a == "dry-run");
     let mut client: Option<reqwest::blocking::Client> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "send" => {
+                if dry_run {
+                    print_dry_run(state);
+                    i += 1;
+                    continue;
+                }
+                let had_responses = !state.responses.is_empty();
                 state.responses.clear();
                 let c = client.get_or_insert_with(|| build_client(insecure));
                 let record = execute(c, state, None)?;
                 state.responses.push(record);
                 save_state(state);
                 let last = state.responses.last().unwrap();
-                eprintln!("< {}", format_status(last.status));
+                if had_responses {
+                    eprintln!("< {} (previous responses cleared)", format_status(last.status));
+                } else {
+                    eprintln!("< {}", format_status(last.status));
+                }
                 print!("{}", last.body);
                 if fail_on_error && last.status >= 400 {
                     return Err(());
@@ -252,8 +319,15 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 if let Some(prev) = state.responses.last().cloned()
                     && let Err(e) = apply_interpolation(state, &prev)
                 {
-                    eprintln!("error: {}", e);
+                    eprintln!("error in '{}': {}", path_str, e);
                     return Err(());
+                }
+
+                if dry_run {
+                    eprintln!("(dry-run: {})", path_str);
+                    print_dry_run(state);
+                    i += 2;
+                    continue;
                 }
 
                 let c = client.get_or_insert_with(|| build_client(insecure));
@@ -291,6 +365,9 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 i += 1;
             }
             "--insecure" | "insecure" => {
+                i += 1;
+            }
+            "--dry-run" | "dry-run" => {
                 i += 1;
             }
             "method" => {
@@ -338,6 +415,11 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     eprintln!("error: 'header' requires KEY:VALUE or KEY VALUE");
                     return Err(());
                 }
+            }
+            "header-rm-all" => {
+                state.headers.clear();
+                modified = true;
+                i += 1;
             }
             "header-rm" => {
                 if i + 1 < args.len() {

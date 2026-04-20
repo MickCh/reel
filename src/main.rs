@@ -15,7 +15,7 @@ fn main() {
     }
 
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        eprintln!("reel {}", env!("CARGO_PKG_VERSION"));
+        println!("reel {}", env!("CARGO_PKG_VERSION"));
         return;
     }
 

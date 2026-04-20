@@ -33,8 +33,10 @@ Commands can be combined freely in a single invocation.
 | `url <URL>` | Set request URL |
 | `header <KEY:VALUE>` | Add a header (`KEY:VALUE` or `KEY VALUE`) |
 | `header-rm <KEY>` | Remove a header by name |
+| `header-rm-all` | Remove all headers |
 | `body <BODY>` | Set request body |
 | `send` | Send the request using current session state |
+| `--dry-run` | Print the request that would be sent, without sending it (position-independent) |
 | `then <PATH>` | Load preset file, interpolate `${{ expr }}` from last response, and send |
 | `show` | Print the current session state |
 | `response [N\|all] [body\|headers]` | Show Nth response (default: last), or all; full JSON, body only, or headers only |
@@ -85,6 +87,9 @@ reel header Authorization "Bearer mytoken"
 # Remove a single header without touching the rest of the session
 reel header-rm Authorization
 
+# Remove all headers at once
+reel header-rm-all
+
 # Both formats for adding are equivalent:
 reel header "Authorization: Bearer token"
 reel header Authorization "Bearer token"
@@ -92,7 +97,7 @@ reel header Authorization "Bearer token"
 
 ### Inspect responses
 
-The session stores responses automatically. A plain `send` replaces the stored list with a single response; a chain (`send then … then …`) accumulates one response per step.
+The session stores responses automatically. A plain `send` replaces the stored list with a single response (you'll see a note confirming this); a chain (`send then … then …`) accumulates one response per step.
 
 ```bash
 reel response           # full JSON of the last response
@@ -103,9 +108,9 @@ reel response body      # raw response body
 reel response body | jq .name
 reel response body | jq '.users[] | .email'
 
-# access a specific step in a chain (0-based index)
-reel response 0 body    # body of the first response
-reel response 1         # full JSON of the second response
+# access a specific step in a chain (1-based index)
+reel response 1 body    # body of the first response
+reel response 2         # full JSON of the second response
 
 # see all responses at once
 reel response all
@@ -133,6 +138,17 @@ reel load prod.json url https://staging.example.com save staging.json
 ```
 
 This is useful for sharing named presets between terminals or keeping configurations for different environments.
+
+### Dry-run: inspect before sending
+
+Use `--dry-run` to print the full request (method, URL, headers, body) to stderr without sending it. Useful before destructive calls.
+
+```bash
+reel method DELETE url https://api.example.com/users/42 --dry-run send
+reel load prod.json --dry-run send
+```
+
+All state mutations still take effect and are saved; only the HTTP call is skipped.
 
 ### Chaining requests with `then`
 
@@ -171,7 +187,7 @@ If a placeholder cannot be resolved the chain aborts immediately with an error.
 
 - Response status is written to **stderr** (`200 OK`)
 - Response body is written to **stdout**
-- `show` and all diagnostic messages go to **stderr**
+- `show`, confirmations (`Request loaded from: …`, `Session cleared.`), and all diagnostic messages go to **stderr**
 - `response headers` writes headers to **stdout** (it is data, not a status message)
 
 This makes it easy to pipe the body while still seeing the status:
