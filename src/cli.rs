@@ -153,14 +153,15 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
     let mut fail_on_error = false;
 
     let insecure = args.iter().any(|a| a == "--insecure");
-    let client = build_client(insecure);
+    let mut client: Option<reqwest::blocking::Client> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "send" => {
                 state.responses.clear();
-                let record = execute(&client, state, None)?;
+                let c = client.get_or_insert_with(|| build_client(insecure));
+                let record = execute(c, state, None)?;
                 state.responses.push(record);
                 save_state(state);
                 let last = state.responses.last().unwrap();
@@ -191,7 +192,8 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     return Err(());
                 }
 
-                let record = execute(&client, state, Some(&path_str))?;
+                let c = client.get_or_insert_with(|| build_client(insecure));
+                let record = execute(c, state, Some(&path_str))?;
                 state.responses.push(record);
                 save_state(state);
                 let last = state.responses.last().unwrap();
@@ -285,7 +287,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     i += 3;
                 } else {
                     eprintln!("error: 'header' requires KEY:VALUE or KEY VALUE");
-                    i += 2;
+                    return Err(());
                 }
             }
             "header-rm" => {

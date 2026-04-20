@@ -36,6 +36,7 @@ pub fn execute(
         "PATCH" => client.patch(&url),
         "DELETE" => client.delete(&url),
         "HEAD" => client.head(&url),
+        "OPTIONS" => client.request(reqwest::Method::OPTIONS, &url),
         other => match reqwest::Method::from_bytes(other.as_bytes()) {
             Ok(m) => client.request(m, &url),
             Err(_) => {

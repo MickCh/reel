@@ -42,10 +42,11 @@ pub fn load_state() -> State {
     };
     match serde_json::from_str(&content) {
         Ok(state) => state,
-        Err(_) => {
+        Err(e) => {
             eprintln!(
-                "warning: session file '{}' is corrupted; starting with empty state",
-                path.display()
+                "warning: session file '{}' is corrupted ({}); starting with empty state",
+                path.display(),
+                e
             );
             State::default()
         }
@@ -71,7 +72,8 @@ pub fn load_preset(path: &Path) -> Result<State, ()> {
 
 pub fn save_state(state: &State) {
     let path = session_path();
-    fs::create_dir_all(path.parent().unwrap()).expect("cannot create session directory");
+    fs::create_dir_all(path.parent().expect("session path has no parent"))
+        .expect("cannot create session directory");
     let content = serde_json::to_string_pretty(state).unwrap();
     fs::write(&path, content).expect("cannot write session file");
 }

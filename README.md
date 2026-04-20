@@ -12,6 +12,10 @@ Each terminal window runs its own shell process. `reel` uses the parent shell's 
 - Different terminal windows have **independent sessions**
 - A session disappears naturally when the shell exits
 
+## Platform support
+
+`reel` is Linux-only. It reads `/proc/self/status` to obtain the parent shell's PID, which is not available on macOS or Windows.
+
 ## Installation
 
 ```bash
@@ -205,8 +209,10 @@ Sessions are stored as plain JSON and can be edited or version-controlled:
 
 The `responses` array is written automatically after each `send` and can be omitted when creating preset files — it will be populated on first use.
 
+> **Note:** Session files and preset files store credentials (e.g. `Authorization` headers) in plaintext. Avoid committing preset files that contain real tokens to version control.
+
 ## Dependencies
 
 - [reqwest](https://github.com/seanmonstar/reqwest) — HTTP client
-- [serde](https://serde.rs/) / [serde_json](https://github.com/seanmonstar/reqwest) — JSON serialization
+- [serde](https://serde.rs/) / [serde_json](https://github.com/serde-rs/json) — JSON serialization
 - [dirs](https://github.com/dirs-dev/dirs-rs) — home directory lookup
