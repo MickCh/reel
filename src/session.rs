@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::model::State;
 
@@ -33,22 +33,40 @@ pub fn load_state() -> State {
     if !path.exists() {
         return State::default();
     }
-    match fs::read_to_string(&path) {
-        Ok(content) => match serde_json::from_str(&content) {
-            Ok(state) => state,
-            Err(_) => {
-                eprintln!(
-                    "warning: session file '{}' is corrupted; starting with empty state",
-                    path.display()
-                );
-                State::default()
-            }
-        },
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("warning: could not read session file '{}': {}", path.display(), e);
+            return State::default();
+        }
+    };
+    match serde_json::from_str(&content) {
+        Ok(state) => state,
+        Err(_) => {
+            eprintln!(
+                "warning: session file '{}' is corrupted; starting with empty state",
+                path.display()
+            );
             State::default()
         }
     }
+}
+
+pub fn save_preset(state: &State, path: &Path) {
+    let mut to_save = state.clone();
+    to_save.responses.clear();
+    let content = serde_json::to_string_pretty(&to_save).unwrap();
+    match fs::write(path, content) {
+        Ok(_) => eprintln!("Request saved to: {}", path.display()),
+        Err(e) => eprintln!("error writing '{}': {}", path.display(), e),
+    }
+}
+
+pub fn load_preset(path: &Path) -> Result<State, ()> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| eprintln!("error reading '{}': {}", path.display(), e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| eprintln!("error parsing '{}': {}", path.display(), e))
 }
 
 pub fn save_state(state: &State) {

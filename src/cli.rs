@@ -1,9 +1,8 @@
-use std::fs;
 use std::path::PathBuf;
 
 use crate::http::{build_client, execute};
 use crate::model::{ResponseRecord, State};
-use crate::session::{delete_session, save_state, session_path};
+use crate::session::{delete_session, load_preset, save_preset, save_state, session_path};
 use crate::template::apply_interpolation;
 
 pub enum ResponseTarget {
@@ -161,8 +160,12 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
         match args[i].as_str() {
             "send" => {
                 state.responses.clear();
-                let status = execute(&client, state, None).map_err(|_| ())?;
-                if fail_on_error && status >= 400 {
+                let record = execute(&client, state, None)?;
+                state.responses.push(record);
+                save_state(state);
+                let last = state.responses.last().unwrap();
+                print!("{}", last.body);
+                if fail_on_error && last.status >= 400 {
                     return Err(());
                 }
                 modified = false;
@@ -177,21 +180,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 let path = PathBuf::from(&path_str);
                 let prev_responses = state.responses.clone();
 
-                let content = match fs::read_to_string(&path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("error reading '{}': {}", path.display(), e);
-                        return Err(());
-                    }
-                };
-                let mut loaded: State = match serde_json::from_str(&content) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("error parsing '{}': {}", path.display(), e);
-                        return Err(());
-                    }
-                };
-
+                let mut loaded = load_preset(&path)?;
                 loaded.responses = prev_responses;
                 *state = loaded;
 
@@ -202,8 +191,12 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     return Err(());
                 }
 
-                let status = execute(&client, state, Some(&path_str)).map_err(|_| ())?;
-                if fail_on_error && status >= 400 {
+                let record = execute(&client, state, Some(&path_str))?;
+                state.responses.push(record);
+                save_state(state);
+                let last = state.responses.last().unwrap();
+                print!("{}", last.body);
+                if fail_on_error && last.status >= 400 {
                     return Err(());
                 }
                 modified = false;
@@ -260,7 +253,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     i += 2;
                 } else {
                     eprintln!("error: 'method' requires a value");
-                    i += 1;
+                    return Err(());
                 }
             }
             "url" => {
@@ -270,7 +263,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     i += 2;
                 } else {
                     eprintln!("error: 'url' requires a value");
-                    i += 1;
+                    return Err(());
                 }
             }
             "header" => {
@@ -316,19 +309,13 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     i += 2;
                 } else {
                     eprintln!("error: 'body' requires a value");
-                    i += 1;
+                    return Err(());
                 }
             }
             "save" => {
                 if i + 1 < args.len() {
                     let path = PathBuf::from(&args[i + 1]);
-                    let mut to_save = state.clone();
-                    to_save.responses.clear();
-                    let content = serde_json::to_string_pretty(&to_save).unwrap();
-                    match fs::write(&path, content) {
-                        Ok(_) => eprintln!("Request saved to: {}", path.display()),
-                        Err(e) => eprintln!("error writing '{}': {}", path.display(), e),
-                    }
+                    save_preset(state, &path);
                     i += 2;
                 } else {
                     eprintln!("error: 'save' requires a path");
@@ -338,16 +325,10 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             "load" => {
                 if i + 1 < args.len() {
                     let path = PathBuf::from(&args[i + 1]);
-                    match fs::read_to_string(&path) {
-                        Ok(content) => match serde_json::from_str::<State>(&content) {
-                            Ok(loaded) => {
-                                *state = loaded;
-                                modified = true;
-                                eprintln!("Request loaded from: {}", path.display());
-                            }
-                            Err(e) => eprintln!("error parsing file: {}", e),
-                        },
-                        Err(e) => eprintln!("error reading '{}': {}", path.display(), e),
+                    if let Ok(loaded) = load_preset(&path) {
+                        *state = loaded;
+                        modified = true;
+                        eprintln!("Request loaded from: {}", path.display());
                     }
                     i += 2;
                 } else {
