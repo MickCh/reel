@@ -15,6 +15,7 @@ pub struct State {
     pub url: Option<String>,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last: Option<LastResponse>,
 }
 

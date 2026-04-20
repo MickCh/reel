@@ -14,8 +14,10 @@ pub enum LastView {
 
 pub fn show_state(state: &State) {
     println!("Session: {}", session_path().display());
-    println!();
-    println!("  method  {}", state.method.as_deref().unwrap_or("(not set)"));
+    println!(
+        "  method  {}",
+        state.method.as_deref().unwrap_or("(not set)")
+    );
     println!("  url     {}", state.url.as_deref().unwrap_or("(not set)"));
     for (k, v) in &state.headers {
         println!("  header  {}: {}", k, v);
@@ -51,7 +53,9 @@ pub fn print_usage() {
     eprintln!("  header-rm <KEY>        remove a header by name");
     eprintln!("  body <BODY>            set request body");
     eprintln!("  send                   send the current request");
-    eprintln!("  then <PATH>            load next request from file (with template interpolation) and send it");
+    eprintln!(
+        "  then <PATH>            load next request from file (with template interpolation) and send it"
+    );
     eprintln!("  show                   print the current session state");
     eprintln!("  last [body|headers]    show last response (default: full JSON)");
     eprintln!("  reset                  clear the session state");
@@ -132,14 +136,6 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                 }
                 modified = false;
                 i += 2;
-            }
-            "exec" => {
-                eprintln!("error: 'exec' has been renamed to 'send'");
-                std::process::exit(1);
-            }
-            "next" => {
-                eprintln!("error: 'next' has been renamed to 'then'");
-                std::process::exit(1);
             }
             "show" => {
                 do_show = true;
@@ -237,9 +233,11 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
             "save" => {
                 if i + 1 < args.len() {
                     let path = PathBuf::from(&args[i + 1]);
-                    let content = serde_json::to_string_pretty(&state).unwrap();
+                    let mut to_save = state.clone();
+                    to_save.last = None;
+                    let content = serde_json::to_string_pretty(&to_save).unwrap();
                     match fs::write(&path, content) {
-                        Ok(_) => println!("Session saved to: {}", path.display()),
+                        Ok(_) => println!("Request saved to: {}", path.display()),
                         Err(e) => eprintln!("error writing '{}': {}", path.display(), e),
                     }
                     i += 2;
@@ -256,7 +254,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                             Ok(loaded) => {
                                 *state = loaded;
                                 modified = true;
-                                println!("Loaded state from: {}", path.display());
+                                println!("Request loaded from: {}", path.display());
                             }
                             Err(e) => eprintln!("error parsing file: {}", e),
                         },

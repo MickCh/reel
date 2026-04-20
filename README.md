@@ -2,6 +2,8 @@
 
 A stateful HTTP client for the command line. Like `curl`, but it remembers your settings across invocations — per terminal window.
 
+The name comes from a film reel: each request is a frame, and the session threads them together into a single strip.
+
 ## How sessions work
 
 Each terminal window runs its own shell process. `reel` uses the parent shell's PID as a session key, storing state in `~/.reel/sessions/<ppid>.json`. This means:

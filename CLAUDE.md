@@ -31,7 +31,7 @@ struct State {
     url:     Option<String>,
     headers: HashMap<String, String>,
     body:    Option<String>,
-    last:    Option<LastResponse>,   // populated by exec, never set by the user
+    last:    Option<LastResponse>,   // populated by send, never set by the user
 }
 
 struct LastResponse {
@@ -77,7 +77,7 @@ If a placeholder cannot be resolved (missing key, non-JSON body, unclosed `${{`)
 
 ### Argument parsing
 
-No external parser (no `clap`). A hand-written `while` loop over `args` processes token pairs. This keeps the UX simple: `reel method GET url https://example.com exec` reads naturally left-to-right.
+No external parser (no `clap`). A hand-written `while` loop over `args` processes token pairs. This keeps the UX simple: `reel method GET url https://example.com send` reads naturally left-to-right.
 
 `send` and `then` execute inline during the loop (not deferred). `show` and `last` are deferred and run once after the loop.
 
