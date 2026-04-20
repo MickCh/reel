@@ -33,7 +33,8 @@ Commands can be combined freely in a single invocation.
 | `send` | Send the request using current session state |
 | `then <PATH>` | Load preset file, interpolate `${{ expr }}` from last response, and send |
 | `show` | Print the current session state |
-| `last [body\|headers]` | Show last response: full JSON (default), body only, or headers only |
+| `response [N] [body\|headers]` | Show Nth response (default: last); full JSON, body only, or headers only |
+| `responses` | Show all responses from the last chain as a JSON array |
 | `reset` | Clear all session state |
 | `load <PATH>` | Load state from a JSON file |
 | `save <PATH>` | Save current session state to a JSON file |
@@ -84,21 +85,28 @@ reel header "Authorization: Bearer token"
 reel header Authorization "Bearer token"
 ```
 
-### Inspect the last response
+### Inspect responses
 
-The session stores the last response automatically after every `send`.
+The session stores responses automatically. A plain `send` replaces the stored list with a single response; a chain (`send then … then …`) accumulates one response per step.
 
 ```bash
-reel last           # full JSON: { status, headers, body }
-reel last headers   # status code + response headers
-reel last body      # raw response body
+reel response           # full JSON of the last response
+reel response headers   # status code + response headers
+reel response body      # raw response body
 
 # pipe-friendly
-reel last body | jq .name
-reel last body | jq '.users[] | .email'
+reel response body | jq .name
+reel response body | jq '.users[] | .email'
+
+# access a specific step in a chain (0-based index)
+reel response 0 body    # body of the first response
+reel response 1         # full JSON of the second response
+
+# see all responses at once
+reel responses
 ```
 
-`last` reads from the stored session state, so it works even after the
+`response` reads from the stored session state, so it works even after the
 original `send` has finished — no need to re-run the request.
 
 ### Save and restore sessions
@@ -163,7 +171,7 @@ reel send | jq .name
 ```
 
 The response is also saved to the session, so you can inspect it later
-with `reel last body` without re-sending the request.
+with `reel response body` without re-sending the request.
 
 ## Session file format
 

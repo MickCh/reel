@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use crate::model::{LastResponse, State};
+use crate::model::{ResponseRecord, State};
 use crate::session::save_state;
 
 // Execute the current state as an HTTP request.
-// Stores the response in state.last and saves the session before writing to stdout
+// Appends the response to state.responses and saves the session before writing to stdout
 // so a broken pipe (e.g. `reel send | head -5`) never prevents persistence.
 // Returns false on failure so the caller can abort a chain.
-pub fn execute(state: &mut State) -> bool {
+pub fn execute(state: &mut State, source: Option<&str>) -> bool {
     let url = match &state.url {
         Some(u) => u.clone(),
         None => {
@@ -56,7 +56,8 @@ pub fn execute(state: &mut State) -> bool {
 
             match resp.text() {
                 Ok(body) => {
-                    state.last = Some(LastResponse {
+                    state.responses.push(ResponseRecord {
+                        source: source.map(|s| s.to_string()),
                         status: status.as_u16(),
                         headers: resp_headers,
                         body: body.clone(),

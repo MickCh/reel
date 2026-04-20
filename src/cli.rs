@@ -2,14 +2,20 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::http::execute;
-use crate::model::State;
+use crate::model::{ResponseRecord, State};
 use crate::session::{save_state, session_path};
 use crate::template::apply_interpolation;
 
-pub enum LastView {
+pub enum ResponseTarget {
+    Last,
+    Index(usize),
+    All,
+}
+
+pub enum ResponseView {
+    Full,
     Body,
     Headers,
-    All,
 }
 
 pub fn show_state(state: &State) {
@@ -27,19 +33,60 @@ pub fn show_state(state: &State) {
     }
 }
 
-pub fn show_last(state: &State, view: LastView) {
-    match &state.last {
-        Some(last) => match view {
-            LastView::Body => print!("{}", last.body),
-            LastView::Headers => {
-                println!("{}", last.status);
-                for (k, v) in &last.headers {
-                    println!("{}: {}", k, v);
+fn show_single(r: &ResponseRecord, view: &ResponseView) {
+    match view {
+        ResponseView::Body => print!("{}", r.body),
+        ResponseView::Headers => {
+            println!("{}", r.status);
+            for (k, v) in &r.headers {
+                println!("{}: {}", k, v);
+            }
+        }
+        ResponseView::Full => println!("{}", serde_json::to_string_pretty(r).unwrap()),
+    }
+}
+
+pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) {
+    if state.responses.is_empty() {
+        eprintln!("error: no responses stored yet (run 'reel send' first)");
+        return;
+    }
+    match target {
+        ResponseTarget::Last => show_single(state.responses.last().unwrap(), &view),
+        ResponseTarget::Index(n) => match state.responses.get(n) {
+            Some(r) => show_single(r, &view),
+            None => eprintln!(
+                "error: response index {} out of range (have {})",
+                n,
+                state.responses.len()
+            ),
+        },
+        ResponseTarget::All => match view {
+            ResponseView::Full => {
+                println!("{}", serde_json::to_string_pretty(&state.responses).unwrap())
+            }
+            ResponseView::Body => {
+                for (i, r) in state.responses.iter().enumerate() {
+                    if state.responses.len() > 1 {
+                        let label = r.source.as_deref().unwrap_or("send");
+                        eprintln!("[{}] {}", i, label);
+                    }
+                    print!("{}", r.body);
+                    if i + 1 < state.responses.len() {
+                        println!();
+                    }
                 }
             }
-            LastView::All => println!("{}", serde_json::to_string_pretty(last).unwrap()),
+            ResponseView::Headers => {
+                for (i, r) in state.responses.iter().enumerate() {
+                    let label = r.source.as_deref().unwrap_or("send");
+                    println!("[{}] {} — {}", i, r.status, label);
+                    for (k, v) in &r.headers {
+                        println!("  {}: {}", k, v);
+                    }
+                }
+            }
         },
-        None => eprintln!("error: no response stored yet (run 'reel send' first)"),
     }
 }
 
@@ -57,7 +104,8 @@ pub fn print_usage() {
         "  then <PATH>            load next request from file (with template interpolation) and send it"
     );
     eprintln!("  show                   print the current session state");
-    eprintln!("  last [body|headers]    show last response (default: full JSON)");
+    eprintln!("  response [N] [body|headers]   show Nth response (default: last); full JSON, body, or headers");
+    eprintln!("  responses              show all responses as a JSON array");
     eprintln!("  reset                  clear the session state");
     eprintln!("  load <PATH>            load state from a JSON file");
     eprintln!("  save <PATH>            save current session state to a JSON file");
@@ -73,26 +121,36 @@ pub fn print_usage() {
     eprintln!("  reel header \"Authorization: Bearer token\"");
     eprintln!("  reel header Content-Type application/json");
     eprintln!("  reel body '{{\"key\":\"value\"}}' send");
-    eprintln!("  reel last body | jq .name");
-    eprintln!("  reel last headers");
+    eprintln!("  reel response body | jq .name");
+    eprintln!("  reel response headers");
     eprintln!("  reel send then step2.json then step3.json");
+    eprintln!("  reel responses");
 }
 
 pub struct ParseResult {
     pub do_show: bool,
-    pub do_last: Option<LastView>,
+    pub do_response: Option<(ResponseTarget, ResponseView)>,
+}
+
+fn parse_response_view(args: &[String]) -> (ResponseView, usize) {
+    match args.first().map(String::as_str) {
+        Some("body") => (ResponseView::Body, 1),
+        Some("headers") => (ResponseView::Headers, 1),
+        _ => (ResponseView::Full, 0),
+    }
 }
 
 pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
     let mut modified = false;
     let mut do_show = false;
-    let mut do_last: Option<LastView> = None;
+    let mut do_response: Option<(ResponseTarget, ResponseView)> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "send" => {
-                if !execute(state) {
+                state.responses.clear();
+                if !execute(state, None) {
                     std::process::exit(1);
                 }
                 modified = false;
@@ -103,8 +161,9 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                     eprintln!("error: 'then' requires a file path");
                     std::process::exit(1);
                 }
-                let path = PathBuf::from(&args[i + 1]);
-                let prev_last = state.last.clone();
+                let path_str = args[i + 1].clone();
+                let path = PathBuf::from(&path_str);
+                let prev_responses = state.responses.clone();
 
                 let content = match fs::read_to_string(&path) {
                     Ok(c) => c,
@@ -121,17 +180,17 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                     }
                 };
 
-                loaded.last = prev_last;
+                loaded.responses = prev_responses;
                 *state = loaded;
 
-                if let Some(last) = state.last.clone()
-                    && let Err(e) = apply_interpolation(state, &last)
+                if let Some(prev) = state.responses.last().cloned()
+                    && let Err(e) = apply_interpolation(state, &prev)
                 {
                     eprintln!("error: {}", e);
                     std::process::exit(1);
                 }
 
-                if !execute(state) {
+                if !execute(state, Some(&path_str)) {
                     std::process::exit(1);
                 }
                 modified = false;
@@ -141,22 +200,31 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                 do_show = true;
                 i += 1;
             }
-            "last" => {
-                let view = match args.get(i + 1).map(String::as_str) {
-                    Some("body") => {
-                        i += 2;
-                        LastView::Body
+            "response" => {
+                let rest = &args[i + 1..];
+                let (target, view, consumed) = match rest.first().map(String::as_str) {
+                    Some("body") => (ResponseTarget::Last, ResponseView::Body, 1),
+                    Some("headers") => (ResponseTarget::Last, ResponseView::Headers, 1),
+                    Some("all") => {
+                        let (view, extra) = parse_response_view(&args[i + 2..]);
+                        (ResponseTarget::All, view, 1 + extra)
                     }
-                    Some("headers") => {
-                        i += 2;
-                        LastView::Headers
+                    Some(token) => {
+                        if let Ok(n) = token.parse::<usize>() {
+                            let (view, extra) = parse_response_view(&args[i + 2..]);
+                            (ResponseTarget::Index(n), view, 1 + extra)
+                        } else {
+                            (ResponseTarget::Last, ResponseView::Full, 0)
+                        }
                     }
-                    _ => {
-                        i += 1;
-                        LastView::All
-                    }
+                    None => (ResponseTarget::Last, ResponseView::Full, 0),
                 };
-                do_last = Some(view);
+                do_response = Some((target, view));
+                i += 1 + consumed;
+            }
+            "responses" => {
+                do_response = Some((ResponseTarget::All, ResponseView::Full));
+                i += 1;
             }
             "reset" => {
                 *state = State::default();
@@ -234,7 +302,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
                 if i + 1 < args.len() {
                     let path = PathBuf::from(&args[i + 1]);
                     let mut to_save = state.clone();
-                    to_save.last = None;
+                    to_save.responses.clear();
                     let content = serde_json::to_string_pretty(&to_save).unwrap();
                     match fs::write(&path, content) {
                         Ok(_) => println!("Request saved to: {}", path.display()),
@@ -278,5 +346,5 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> ParseResult {
         save_state(state);
     }
 
-    ParseResult { do_show, do_last }
+    ParseResult { do_show, do_response }
 }

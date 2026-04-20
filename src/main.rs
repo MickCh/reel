@@ -21,7 +21,7 @@ fn main() {
         cli::show_state(&state);
     }
 
-    if let Some(view) = result.do_last {
-        cli::show_last(&state, view);
+    if let Some((target, view)) = result.do_response {
+        cli::show_response(&state, target, view);
     }
 }
