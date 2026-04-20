@@ -25,8 +25,10 @@ fn main() {
             if result.do_show {
                 cli::show_state(&state);
             }
-            if let Some((target, view)) = result.do_response {
-                cli::show_response(&state, target, view);
+            if let Some((target, view)) = result.do_response
+                && !cli::show_response(&state, target, view)
+            {
+                std::process::exit(1);
             }
         }
         Err(()) => std::process::exit(1),

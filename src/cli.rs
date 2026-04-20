@@ -129,20 +129,23 @@ fn show_single(r: &ResponseRecord, view: &ResponseView) {
     }
 }
 
-pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) {
+pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) -> bool {
     if state.responses.is_empty() {
         eprintln!("error: no responses stored yet (run 'reel send' first)");
-        return;
+        return false;
     }
     match target {
         ResponseTarget::Last => show_single(state.responses.last().unwrap(), &view),
         ResponseTarget::Index(n) => match state.responses.get(n) {
             Some(r) => show_single(r, &view),
-            None => eprintln!(
-                "error: response index {} out of range (have {})",
-                n + 1,
-                state.responses.len()
-            ),
+            None => {
+                eprintln!(
+                    "error: response index {} out of range (have {})",
+                    n + 1,
+                    state.responses.len()
+                );
+                return false;
+            }
         },
         ResponseTarget::All => match view {
             ResponseView::Full => {
@@ -173,6 +176,7 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
             }
         },
     }
+    true
 }
 
 pub fn print_usage() {
@@ -472,7 +476,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             unknown => {
                 eprintln!("error: unknown command '{}'", unknown);
                 eprintln!("Run 'reel' with no arguments to see usage.");
-                i += 1;
+                return Err(());
             }
         }
     }
