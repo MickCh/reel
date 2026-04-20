@@ -37,12 +37,11 @@ Commands can be combined freely in a single invocation.
 | `send` | Send the request using current session state |
 | `then <PATH>` | Load preset file, interpolate `${{ expr }}` from last response, and send |
 | `show` | Print the current session state |
-| `response [N] [body\|headers]` | Show Nth response (default: last); full JSON, body only, or headers only |
-| `responses` | Show all responses from the last chain as a JSON array |
+| `response [N\|all] [body\|headers]` | Show Nth response (default: last), or all; full JSON, body only, or headers only |
 | `reset` | Clear all session state |
 | `load <PATH>` | Load state from a JSON file |
 | `save <PATH>` | Save current session state to a JSON file |
-| `fail` | Exit with code 1 if the HTTP response status is 4xx or 5xx |
+| `fail` | Exit with code 1 if any `send` or `then` receives a 4xx/5xx response (position-independent) |
 | `--insecure` | Skip TLS certificate verification |
 
 ## Usage examples
@@ -109,7 +108,9 @@ reel response 0 body    # body of the first response
 reel response 1         # full JSON of the second response
 
 # see all responses at once
-reel responses
+reel response all
+reel response all body
+reel response all headers
 ```
 
 `response` reads from the stored session state, so it works even after the
@@ -170,6 +171,8 @@ If a placeholder cannot be resolved the chain aborts immediately with an error.
 
 - Response status is written to **stderr** (`200 OK`)
 - Response body is written to **stdout**
+- `show` and all diagnostic messages go to **stderr**
+- `response headers` writes headers to **stdout** (it is data, not a status message)
 
 This makes it easy to pipe the body while still seeing the status:
 

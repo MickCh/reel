@@ -57,7 +57,7 @@ struct ResponseRecord {
    - `send` — clears `state.responses`, executes immediately inline; calls `save_state` before printing body
    - `then <PATH>` — loads a preset file, carries `state.responses` forward, applies template interpolation from the last response, executes immediately inline and appends to `state.responses`; aborts the whole chain on failure
 3. If any mutation occurred without a following `send`/`then`, persist `state` at end of loop
-4. Run `show` and/or `response`/`responses` — always after the main loop, in that order
+4. Run `show` and/or `response` — always after the main loop, in that order
 
 `send` calls `save_state` itself (appending to `state.responses`) **before** printing the body, so a broken pipe (e.g. `reel send | head -5`) never prevents the response from being persisted.
 
@@ -80,13 +80,13 @@ If a placeholder cannot be resolved (missing key, non-JSON body, unclosed `${{`)
 
 No external parser (no `clap`). A hand-written `while` loop over `args` processes token pairs. This keeps the UX simple: `reel method GET url https://example.com send` reads naturally left-to-right.
 
-`send` and `then` execute inline during the loop (not deferred). `show` and `response`/`responses` are deferred and run once after the loop.
+`send` and `then` execute inline during the loop (not deferred). `show` and `response` are deferred and run once after the loop.
 
-The `response` command peeks at the next token(s) to consume an optional index and/or `body`/`headers` modifier. Any other token is left in place for the main loop to process.
+The `response` command peeks at the next token(s) to consume an optional `all`/index and/or `body`/`headers` modifier. Any other token is left in place for the main loop to process.
 
-`fail` sets a flag that causes the run to exit with code 1 if any subsequent `send` or `then` receives a 4xx/5xx response. `--insecure` skips TLS certificate verification (pre-scanned before the client is built).
+`fail` and `--insecure` are pre-scanned before the loop and apply globally regardless of position. `fail` causes exit with code 1 if any `send` or `then` receives a 4xx/5xx response.
 
-`parse_and_run` returns `Result<ParseResult, ()>`. On `Err(())`, `main` calls `std::process::exit(1)`. All user-visible status messages (reset, save, load) go to stderr so they never pollute piped output.
+`parse_and_run` returns `Result<ParseResult, ()>`. On `Err(())`, `main` calls `std::process::exit(1)`. All diagnostic output (`show`, reset, load confirmations, errors) goes to stderr so it never pollutes piped output. `response headers` writes header data to stdout (it is data, not a diagnostic).
 
 ## Dependencies
 

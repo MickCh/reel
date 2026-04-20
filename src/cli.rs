@@ -18,17 +18,17 @@ pub enum ResponseView {
 }
 
 pub fn show_state(state: &State) {
-    println!("Session: {}", session_path().display());
-    println!(
+    eprintln!("Session: {}", session_path().display());
+    eprintln!(
         "  method  {}",
         state.method.as_deref().unwrap_or("(not set)")
     );
-    println!("  url     {}", state.url.as_deref().unwrap_or("(not set)"));
+    eprintln!("  url     {}", state.url.as_deref().unwrap_or("(not set)"));
     for (k, v) in &state.headers {
-        println!("  header  {}: {}", k, v);
+        eprintln!("  header  {}: {}", k, v);
     }
     if let Some(body) = &state.body {
-        println!("  body    {}", body);
+        eprintln!("  body    {}", body);
     }
 }
 
@@ -107,8 +107,7 @@ pub fn print_usage() {
         "  then <PATH>            load next request from file (with template interpolation) and send it"
     );
     eprintln!("  show                   print the current session state");
-    eprintln!("  response [N] [body|headers]   show Nth response (default: last); full JSON, body, or headers");
-    eprintln!("  responses              show all responses as a JSON array");
+    eprintln!("  response [N|all] [body|headers]   show Nth response (default: last), or all; full JSON, body, or headers");
     eprintln!("  reset                  clear the session state");
     eprintln!("  load <PATH>            load state from a JSON file");
     eprintln!("  save <PATH>            save current session state to a JSON file");
@@ -129,7 +128,7 @@ pub fn print_usage() {
     eprintln!("  reel response body | jq .name");
     eprintln!("  reel response headers");
     eprintln!("  reel send then step2.json then step3.json");
-    eprintln!("  reel responses");
+    eprintln!("  reel response all");
     eprintln!("  reel fail send  # exits 1 on 4xx/5xx");
 }
 
@@ -150,9 +149,9 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
     let mut modified = false;
     let mut do_show = false;
     let mut do_response: Option<(ResponseTarget, ResponseView)> = None;
-    let mut fail_on_error = false;
 
     let insecure = args.iter().any(|a| a == "--insecure");
+    let fail_on_error = args.iter().any(|a| a == "fail");
     let mut client: Option<reqwest::blocking::Client> = None;
 
     let mut i = 0;
@@ -230,10 +229,6 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 do_response = Some((target, view));
                 i += 1 + consumed;
             }
-            "responses" => {
-                do_response = Some((ResponseTarget::All, ResponseView::Full));
-                i += 1;
-            }
             "reset" => {
                 *state = State::default();
                 delete_session();
@@ -242,7 +237,6 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                 i += 1;
             }
             "fail" => {
-                fail_on_error = true;
                 i += 1;
             }
             "--insecure" => {
@@ -301,7 +295,7 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
                     i += 2;
                 } else {
                     eprintln!("error: 'header-rm' requires a header name");
-                    i += 1;
+                    return Err(());
                 }
             }
             "body" => {
@@ -327,15 +321,13 @@ pub fn parse_and_run(args: &[String], state: &mut State) -> Result<ParseResult, 
             "load" => {
                 if i + 1 < args.len() {
                     let path = PathBuf::from(&args[i + 1]);
-                    if let Ok(loaded) = load_preset(&path) {
-                        *state = loaded;
-                        modified = true;
-                        eprintln!("Request loaded from: {}", path.display());
-                    }
+                    *state = load_preset(&path)?;
+                    modified = true;
+                    eprintln!("Request loaded from: {}", path.display());
                     i += 2;
                 } else {
                     eprintln!("error: 'load' requires a path");
-                    i += 1;
+                    return Err(());
                 }
             }
             unknown => {
