@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use anyhow::Result;
+
 use crate::model::{ResponseRecord, State};
 
 pub trait HttpClient {
-    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord, ()>;
+    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord>;
 }
 
 pub struct ReqwestClient {
@@ -24,13 +26,10 @@ impl ReqwestClient {
 }
 
 impl HttpClient for ReqwestClient {
-    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord, ()> {
+    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord> {
         let url = match &state.url {
             Some(u) => u.clone(),
-            None => {
-                eprintln!("error: URL not set (use: reel url <URL>)");
-                return Err(());
-            }
+            None => anyhow::bail!("error: URL not set (use: reel url <URL>)"),
         };
 
         let method = state.method.as_deref().unwrap_or("GET").to_uppercase();
@@ -45,10 +44,7 @@ impl HttpClient for ReqwestClient {
             "OPTIONS" => self.client.request(reqwest::Method::OPTIONS, &url),
             other => match reqwest::Method::from_bytes(other.as_bytes()) {
                 Ok(m) => self.client.request(m, &url),
-                Err(_) => {
-                    eprintln!("error: invalid HTTP method '{}'", other);
-                    return Err(());
-                }
+                Err(_) => anyhow::bail!("error: invalid HTTP method '{}'", other),
             },
         };
 
@@ -70,12 +66,9 @@ impl HttpClient for ReqwestClient {
 
         let resp = req_builder.send().map_err(|e| {
             if e.is_builder() && !url.starts_with("http://") && !url.starts_with("https://") {
-                eprintln!(
-                    "error: invalid URL '{}' — did you forget https://?",
-                    url
-                );
+                anyhow::anyhow!("error: invalid URL '{}' — did you forget https://?", url)
             } else {
-                eprintln!("error: {}", e);
+                anyhow::anyhow!("error: {}", e)
             }
         })?;
         let status = resp.status();
@@ -94,7 +87,7 @@ impl HttpClient for ReqwestClient {
             }
         }
 
-        let body = resp.text().map_err(|e| eprintln!("error reading response: {}", e))?;
+        let body = resp.text().map_err(|e| anyhow::anyhow!("error reading response: {}", e))?;
 
         Ok(ResponseRecord {
             source: source.map(|s| s.to_string()),

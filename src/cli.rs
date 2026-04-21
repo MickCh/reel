@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use anyhow::{bail, Result};
+
 use crate::http::HttpClient;
 use crate::model::{ResponseRecord, State};
 use crate::session::{SessionStore, load_preset, save_preset};
@@ -287,14 +289,13 @@ fn parse_response_view(args: &[String]) -> (ResponseView, usize) {
     }
 }
 
-fn parse_response_target(args: &[String]) -> Result<(ResponseTarget, usize), ()> {
+fn parse_response_target(args: &[String]) -> Result<(ResponseTarget, usize)> {
     match args.first().map(String::as_str) {
         Some("all") => Ok((ResponseTarget::All, 1)),
         Some(token) if token != "body" && token != "headers" => {
             if let Ok(n) = token.parse::<usize>() {
                 if n == 0 {
-                    eprintln!("error: response indices start at 1");
-                    return Err(());
+                    bail!("error: response indices start at 1");
                 }
                 Ok((ResponseTarget::Index(n - 1), 1))
             } else {
@@ -305,7 +306,7 @@ fn parse_response_target(args: &[String]) -> Result<(ResponseTarget, usize), ()>
     }
 }
 
-pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
+pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
     let insecure = args.iter().any(|a| a == "--insecure" || a == "insecure");
     let fail_on_error = args.iter().any(|a| a == "fail");
     let dry_run = args.iter().any(|a| a == "--dry-run" || a == "dry-run");
@@ -321,8 +322,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
             }
             "then" => {
                 if i + 1 >= args.len() {
-                    eprintln!("error: 'then' requires a file path");
-                    return Err(());
+                    bail!("error: 'then' requires a file path");
                 }
                 commands.push(Command::Then(PathBuf::from(&args[i + 1])));
                 i += 2;
@@ -350,8 +350,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
                     commands.push(Command::Method(args[i + 1].to_uppercase()));
                     i += 2;
                 } else {
-                    eprintln!("error: 'method' requires a value");
-                    return Err(());
+                    bail!("error: 'method' requires a value");
                 }
             }
             "url" => {
@@ -359,21 +358,18 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
                     commands.push(Command::Url(args[i + 1].clone()));
                     i += 2;
                 } else {
-                    eprintln!("error: 'url' requires a value");
-                    return Err(());
+                    bail!("error: 'url' requires a value");
                 }
             }
             "header" => {
                 if i + 1 >= args.len() {
-                    eprintln!("error: 'header' requires KEY:VALUE or KEY VALUE");
-                    return Err(());
+                    bail!("error: 'header' requires KEY:VALUE or KEY VALUE");
                 }
                 let next = &args[i + 1];
                 if let Some(pos) = next.find(':') {
                     let key = next[..pos].trim().to_lowercase();
                     if key.is_empty() {
-                        eprintln!("error: header key cannot be empty (use KEY:VALUE or KEY VALUE)");
-                        return Err(());
+                        bail!("error: header key cannot be empty (use KEY:VALUE or KEY VALUE)");
                     }
                     let val = next[pos + 1..].trim().to_string();
                     commands.push(Command::Header(key, val));
@@ -382,8 +378,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
                     commands.push(Command::Header(next.to_lowercase(), args[i + 2].clone()));
                     i += 3;
                 } else {
-                    eprintln!("error: 'header' requires KEY:VALUE or KEY VALUE");
-                    return Err(());
+                    bail!("error: 'header' requires KEY:VALUE or KEY VALUE");
                 }
             }
             "header-rm-all" => {
@@ -395,8 +390,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
                     commands.push(Command::HeaderRm(args[i + 1].to_lowercase()));
                     i += 2;
                 } else {
-                    eprintln!("error: 'header-rm' requires a header name");
-                    return Err(());
+                    bail!("error: 'header-rm' requires a header name");
                 }
             }
             "body" => {
@@ -404,8 +398,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
                     commands.push(Command::Body(args[i + 1].clone()));
                     i += 2;
                 } else {
-                    eprintln!("error: 'body' requires a value");
-                    return Err(());
+                    bail!("error: 'body' requires a value");
                 }
             }
             "save" => {
@@ -413,8 +406,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
                     commands.push(Command::Save(PathBuf::from(&args[i + 1])));
                     i += 2;
                 } else {
-                    eprintln!("error: 'save' requires a path");
-                    return Err(());
+                    bail!("error: 'save' requires a path");
                 }
             }
             "load" => {
@@ -422,14 +414,11 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags), ()> {
                     commands.push(Command::Load(PathBuf::from(&args[i + 1])));
                     i += 2;
                 } else {
-                    eprintln!("error: 'load' requires a path");
-                    return Err(());
+                    bail!("error: 'load' requires a path");
                 }
             }
             unknown => {
-                eprintln!("error: unknown command '{}'", unknown);
-                eprintln!("Run 'reel' with no arguments to see usage.");
-                return Err(());
+                bail!("error: unknown command '{}'\nRun 'reel' with no arguments to see usage.", unknown);
             }
         }
     }
@@ -442,7 +431,7 @@ pub fn run_commands(
     state: &mut State,
     http: &dyn HttpClient,
     session: &dyn SessionStore,
-) -> Result<ParseResult, ()> {
+) -> Result<ParseResult> {
     let mut modified = false;
     let mut do_show = false;
     let mut do_response: Option<(ResponseTarget, ResponseView)> = None;
@@ -470,7 +459,7 @@ pub fn run_commands(
                     println!();
                 }
                 if flags.fail_on_error && last.status >= 400 {
-                    return Err(());
+                    bail!("error: request failed with status {}", last.status);
                 }
                 modified = false;
             }
@@ -487,18 +476,15 @@ pub fn run_commands(
                         || state.body.as_deref().is_some_and(|b| b.contains("${{"))
                         || state.headers.values().any(|v| v.contains("${{"));
                     if has_template {
-                        eprintln!(
+                        bail!(
                             "error: '{}' uses template expressions but there is no previous response",
                             path_str
                         );
-                        return Err(());
                     }
                 } else {
                     let prev = state.responses.last().cloned().unwrap();
-                    if let Err(e) = apply_interpolation(state, &prev) {
-                        eprintln!("error in '{}': {}", path_str, e);
-                        return Err(());
-                    }
+                    apply_interpolation(state, &prev)
+                        .map_err(|e| anyhow::anyhow!("error in '{}': {}", path_str, e))?;
                 }
 
                 if flags.dry_run {
@@ -517,7 +503,7 @@ pub fn run_commands(
                     println!();
                 }
                 if flags.fail_on_error && last.status >= 400 {
-                    return Err(());
+                    bail!("error: request failed with status {}", last.status);
                 }
                 modified = false;
             }
@@ -539,8 +525,7 @@ pub fn run_commands(
             }
             Command::Url(u) => {
                 if u.is_empty() {
-                    eprintln!("error: URL cannot be empty");
-                    return Err(());
+                    bail!("error: URL cannot be empty");
                 }
                 state.url = Some(u);
                 modified = true;
@@ -621,11 +606,14 @@ mod tests {
     }
 
     impl HttpClient for MockHttp {
-        fn execute(&self, _state: &State, source: Option<&str>) -> Result<ResponseRecord, ()> {
-            self.response.clone().map(|mut r| {
-                r.source = source.map(str::to_string);
-                r
-            })
+        fn execute(&self, _state: &State, source: Option<&str>) -> anyhow::Result<ResponseRecord> {
+            self.response
+                .clone()
+                .map(|mut r| {
+                    r.source = source.map(str::to_string);
+                    r
+                })
+                .map_err(|()| anyhow::anyhow!("mock http error"))
         }
     }
 
@@ -820,7 +808,7 @@ mod tests {
 
     // --- run_commands ---
 
-    fn run(input: &str, state: &mut State, http: &dyn HttpClient, session: &dyn SessionStore) -> Result<ParseResult, ()> {
+    fn run(input: &str, state: &mut State, http: &dyn HttpClient, session: &dyn SessionStore) -> anyhow::Result<ParseResult> {
         let (cmds, flags) = parse_args(&args(input)).unwrap();
         run_commands(cmds, &flags, state, http, session)
     }

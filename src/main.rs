@@ -27,7 +27,10 @@ fn main() {
 
     let (commands, flags) = match cli::parse_args(&args) {
         Ok(result) => result,
-        Err(()) => std::process::exit(1),
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
     };
 
     let http = http::ReqwestClient::new(flags.insecure);
@@ -43,6 +46,9 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Err(()) => std::process::exit(1),
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
     }
 }

@@ -1,3 +1,5 @@
+use anyhow::{bail, Result};
+
 use crate::model::{ResponseRecord, State};
 
 // Navigate a dot-separated path through a JSON value.
@@ -27,7 +29,7 @@ fn traverse_json(value: &serde_json::Value, path: &str) -> Option<String> {
 //   body                → raw response body
 //   body.<path>         → dot-path into the JSON body (e.g. body.access.token)
 //   headers.<name>      → response header value (e.g. headers.content-type)
-fn eval_expr(expr: &str, record: &ResponseRecord) -> Result<String, String> {
+fn eval_expr(expr: &str, record: &ResponseRecord) -> Result<String> {
     if expr == "status" {
         return Ok(record.status.to_string());
     }
@@ -39,19 +41,19 @@ fn eval_expr(expr: &str, record: &ResponseRecord) -> Result<String, String> {
             .headers
             .get(path)
             .cloned()
-            .ok_or_else(|| format!("header '{}' not found in last response", path));
+            .ok_or_else(|| anyhow::anyhow!("header '{}' not found in last response", path));
     }
     if let Some(path) = expr.strip_prefix("body.") {
         let json: serde_json::Value = serde_json::from_str(&record.body)
-            .map_err(|e| format!("response body is not valid JSON: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("response body is not valid JSON: {}", e))?;
         return traverse_json(&json, path)
-            .ok_or_else(|| format!("path '{}' not found in response body", path));
+            .ok_or_else(|| anyhow::anyhow!("path '{}' not found in response body", path));
     }
-    Err(format!("unknown template expression '${{{{ {} }}}}'", expr))
+    bail!("unknown template expression '${{{{ {} }}}}'", expr)
 }
 
 // Replace all ${{ expr }} placeholders in `text` using values from `record`.
-pub fn interpolate(text: &str, record: &ResponseRecord) -> Result<String, String> {
+pub fn interpolate(text: &str, record: &ResponseRecord) -> Result<String> {
     let mut result = String::new();
     let mut remaining = text;
     while let Some(start) = remaining.find("${{") {
@@ -59,7 +61,7 @@ pub fn interpolate(text: &str, record: &ResponseRecord) -> Result<String, String
         remaining = &remaining[start + 3..];
         let end = remaining
             .find("}}")
-            .ok_or_else(|| "unclosed '${{' in template".to_string())?;
+            .ok_or_else(|| anyhow::anyhow!("unclosed '${{' in template"))?;
         let expr = remaining[..end].trim();
         remaining = &remaining[end + 2..];
         result.push_str(&eval_expr(expr, record)?);
@@ -69,7 +71,7 @@ pub fn interpolate(text: &str, record: &ResponseRecord) -> Result<String, String
 }
 
 // Apply interpolation to all string fields of state (url, body, header values).
-pub fn apply_interpolation(state: &mut State, record: &ResponseRecord) -> Result<(), String> {
+pub fn apply_interpolation(state: &mut State, record: &ResponseRecord) -> Result<()> {
     if let Some(url) = state.url.take() {
         state.url = Some(interpolate(&url, record)?);
     }

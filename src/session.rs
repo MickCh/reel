@@ -163,18 +163,19 @@ pub fn cleanup_old_sessions() {
     }
 }
 
-pub fn save_preset(state: &State, path: &Path) -> Result<(), ()> {
+pub fn save_preset(state: &State, path: &Path) -> anyhow::Result<()> {
     let mut to_save = state.clone();
     to_save.responses.clear();
     let content = serde_json::to_string_pretty(&to_save).unwrap();
-    fs::write(path, content).map_err(|e| eprintln!("error writing '{}': {}", path.display(), e))
+    fs::write(path, content)
+        .map_err(|e| anyhow::anyhow!("error writing '{}': {}", path.display(), e))
 }
 
-pub fn load_preset(path: &Path) -> Result<State, ()> {
+pub fn load_preset(path: &Path) -> anyhow::Result<State> {
     let content = fs::read_to_string(path)
-        .map_err(|e| eprintln!("error reading '{}': {}", path.display(), e))?;
+        .map_err(|e| anyhow::anyhow!("error reading '{}': {}", path.display(), e))?;
     serde_json::from_str(&content)
-        .map_err(|e| eprintln!("error parsing '{}': {}", path.display(), e))
+        .map_err(|e| anyhow::anyhow!("error parsing '{}': {}", path.display(), e))
 }
 
 #[cfg(test)]
