@@ -11,7 +11,7 @@ use session::SessionStore;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h" || a == "help") {
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") || args[0] == "help" {
         cli::print_usage();
         return;
     }

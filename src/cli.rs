@@ -466,6 +466,9 @@ pub fn run_commands(
                     eprintln!("< {}", format_status(last.status));
                 }
                 print!("{}", last.body);
+                if !last.body.ends_with('\n') {
+                    println!();
+                }
                 if flags.fail_on_error && last.status >= 400 {
                     return Err(());
                 }
@@ -510,6 +513,9 @@ pub fn run_commands(
                 let last = state.responses.last().unwrap();
                 eprintln!("< {}", format_status(last.status));
                 print!("{}", last.body);
+                if !last.body.ends_with('\n') {
+                    println!();
+                }
                 if flags.fail_on_error && last.status >= 400 {
                     return Err(());
                 }
