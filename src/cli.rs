@@ -141,6 +141,17 @@ fn source_label(r: &ResponseRecord) -> &str {
     r.source.as_deref().unwrap_or("(session)")
 }
 
+fn response_display_value(r: &ResponseRecord) -> serde_json::Value {
+    let body_val = serde_json::from_str::<serde_json::Value>(&r.body)
+        .unwrap_or_else(|_| serde_json::Value::String(r.body.clone()));
+    serde_json::json!({
+        "source": r.source,
+        "status": r.status,
+        "headers": r.headers,
+        "body": body_val,
+    })
+}
+
 fn show_single(r: &ResponseRecord, view: &ResponseView) {
     match view {
         ResponseView::Body => print!("{}", r.body),
@@ -152,7 +163,9 @@ fn show_single(r: &ResponseRecord, view: &ResponseView) {
                 println!("{}: {}", k, v);
             }
         }
-        ResponseView::Full => println!("{}", serde_json::to_string_pretty(r).unwrap()),
+        ResponseView::Full => {
+            println!("{}", serde_json::to_string_pretty(&response_display_value(r)).unwrap())
+        }
     }
 }
 
@@ -176,7 +189,8 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
         },
         ResponseTarget::All => match view {
             ResponseView::Full => {
-                println!("{}", serde_json::to_string_pretty(&state.responses).unwrap())
+                let display: Vec<_> = state.responses.iter().map(response_display_value).collect();
+                println!("{}", serde_json::to_string_pretty(&display).unwrap())
             }
             ResponseView::Body => {
                 for (i, r) in state.responses.iter().enumerate() {
@@ -518,6 +532,10 @@ pub fn run_commands(
                 modified = true;
             }
             Command::Url(u) => {
+                if u.is_empty() {
+                    eprintln!("error: URL cannot be empty");
+                    return Err(());
+                }
                 state.url = Some(u);
                 modified = true;
             }

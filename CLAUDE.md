@@ -12,7 +12,7 @@ Five modules under `src/`:
 |---|---|
 | `main.rs` | Entry point — wires modules together |
 | `model.rs` | `State`, `ResponseRecord` structs (pure data, no I/O) |
-| `session.rs` | `SessionStore` trait + `FileSessionStore` impl; `load_preset`/`save_preset` free functions |
+| `session.rs` | `SessionStore` trait + `FileSessionStore` impl; `load_preset`/`save_preset`/`cleanup_old_sessions` free functions |
 | `template.rs` | Template interpolation engine (`${{ expr }}`) |
 | `http.rs` | `HttpClient` trait + `ReqwestClient` impl |
 | `cli.rs` | `Command` enum, `parse_args`, `run_commands`, display functions |
@@ -56,6 +56,8 @@ Platform-specific PPID lookup is gated with `#[cfg(...)]` inside `get_ppid()` in
 
 The `SessionStore` trait itself is platform-neutral; only the internal `get_ppid()` helper is gated.
 
+`cleanup_old_sessions()` is called from `main.rs` at startup (before `session.load()`). It scans `~/.reel/sessions/` and removes any `.json` files whose last-modified time is older than 7 days. Silent no-op if the directory does not exist yet.
+
 ### Data model
 
 ```rust
@@ -87,7 +89,7 @@ struct ResponseRecord {
    - `reset` — replaces `state` with `State::default()` and calls `session.delete()`
    - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`; key normalised to lowercase
    - `header-rm <KEY>` — removes one entry case-insensitively; warns if absent
-   - `method`, `url`, `body` — overwrite the respective field
+   - `method`, `url`, `body` — overwrite the respective field; `url ""` (empty string) is rejected with an error
    - `send` — clears `state.responses`, executes via `http.execute()`; calls `session.save()` before printing body
    - `then <PATH>` — loads a preset file, carries `state.responses` forward, applies template interpolation from the last response, executes via `http.execute()` and appends to `state.responses`; aborts the whole chain on failure; errors if preset contains `${{` expressions but there is no previous response
 4. If any mutation occurred without a following `send`/`then`, `session.save()` is called at end
@@ -96,6 +98,8 @@ struct ResponseRecord {
 `session.save()` is called inside the `Send`/`Then` branches **before** any stdout write — broken-pipe safety (e.g. `reel send | head -5`).
 
 `response` reads `state.responses` from the already-loaded in-memory state; it never triggers an additional disk write.
+
+`response [N|all]` in `Full` view uses `response_display_value()` to build the JSON output: the `body` field is embedded as a parsed JSON object when the body is valid JSON, and as a plain string otherwise. The underlying `ResponseRecord.body` is always stored as a raw string.
 
 ### Template interpolation (`then`)
 

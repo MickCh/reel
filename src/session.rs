@@ -145,6 +145,35 @@ fn try_load(path: &Path) -> Result<State, String> {
     })
 }
 
+pub fn cleanup_old_sessions() {
+    let dir = dirs::home_dir()
+        .expect("cannot determine home directory")
+        .join(".reel")
+        .join("sessions");
+
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(7 * 24 * 3600))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(metadata) = entry.metadata()
+            && let Ok(modified) = metadata.modified()
+            && modified < cutoff
+        {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 pub fn save_preset(state: &State, path: &Path) -> Result<(), ()> {
     let mut to_save = state.clone();
     to_save.responses.clear();

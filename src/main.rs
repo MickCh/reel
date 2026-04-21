@@ -21,6 +21,7 @@ fn main() {
         return;
     }
 
+    session::cleanup_old_sessions();
     let session = session::FileSessionStore::new();
     let mut state = session.load();
 

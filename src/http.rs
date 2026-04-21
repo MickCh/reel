@@ -62,7 +62,22 @@ impl HttpClient for ReqwestClient {
             None => req_builder,
         };
 
-        let resp = req_builder.send().map_err(|e| eprintln!("error: {}", e))?;
+        if state.body.is_some()
+            && !state.headers.keys().any(|k| k.eq_ignore_ascii_case("content-type"))
+        {
+            eprintln!("warning: body is set but Content-Type header is missing");
+        }
+
+        let resp = req_builder.send().map_err(|e| {
+            if e.is_builder() && !url.starts_with("http://") && !url.starts_with("https://") {
+                eprintln!(
+                    "error: invalid URL '{}' — did you forget https://?",
+                    url
+                );
+            } else {
+                eprintln!("error: {}", e);
+            }
+        })?;
         let status = resp.status();
 
         // Duplicate header names are joined with ", " per RFC 7230.
