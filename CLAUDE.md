@@ -77,7 +77,7 @@ struct ResponseRecord {
 }
 ```
 
-`responses` is part of `State` so it round-trips through the session file automatically. Preset files (used with `load` or `then`) omit this field — `serde` deserialises it as an empty `Vec`. Old session files with a `last` field are silently ignored by serde.
+`responses` is part of `State` so it round-trips through the session file automatically. Preset files (used with `load` or `then`) omit this field — `serde` deserialises it as an empty `Vec`. Old session files with a `last` field are silently ignored by serde. The `headers` field also has `#[serde(default)]`, so preset files that omit `headers` entirely are valid and deserialise to an empty map.
 
 ### State lifecycle
 
