@@ -50,9 +50,9 @@ Platform-specific PPID lookup is gated with `#[cfg(...)]` inside `get_ppid()` in
 
 | Platform | Mechanism |
 |---|---|
-| Linux | `PPid:` line from `/proc/self/status` |
+| Unix (Linux, macOS, BSD, …) | `libc::getppid()` |
 | Windows | `CreateToolhelp32Snapshot` + `Process32FirstW` from `windows-sys` |
-| macOS / other | Falls back to `0` with a warning (all invocations share one session) |
+| other | Falls back to `0` with a warning (all invocations share one session) |
 
 The `SessionStore` trait itself is platform-neutral; only the internal `get_ppid()` helper is gated.
 
@@ -133,6 +133,7 @@ The `response` command peeks at the next token(s) to consume an optional `all`/i
 | `reqwest` (blocking) | HTTP client; blocking avoids async complexity for a CLI |
 | `serde` + `serde_json` | State serialization |
 | `dirs` | Cross-platform home directory |
+| `libc` (Unix only) | PPID lookup via `getppid()` on Linux, macOS, BSD |
 | `windows-sys` (Windows only) | PPID lookup via `CreateToolhelp32Snapshot` |
 
 ## Build & test

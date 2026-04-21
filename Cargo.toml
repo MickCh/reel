@@ -9,6 +9,11 @@ serde_json = "1"
 reqwest = { version = "0.12", features = ["blocking"] }
 dirs = "5"
 
+# libc is used for PPID lookup via getppid() on Unix (Linux, macOS, BSD).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# windows-sys is used for PPID lookup via CreateToolhelp32Snapshot.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",

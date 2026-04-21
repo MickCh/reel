@@ -781,6 +781,7 @@ name = "reel"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

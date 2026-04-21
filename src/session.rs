@@ -2,6 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+#[cfg(unix)]
+extern crate libc;
+
 use crate::model::State;
 
 pub trait SessionStore {
@@ -23,23 +26,9 @@ impl FileSessionStore {
 
 static PPID: OnceLock<u32> = OnceLock::new();
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn get_ppid() -> u32 {
-    *PPID.get_or_init(|| {
-        let ppid = fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("PPid:"))
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .and_then(|p| p.parse().ok())
-            })
-            .unwrap_or(0);
-        if ppid == 0 {
-            eprintln!("warning: could not determine parent PID; all processes will share session '0'");
-        }
-        ppid
-    })
+    *PPID.get_or_init(|| unsafe { libc::getppid() as u32 })
 }
 
 #[cfg(windows)]
@@ -85,7 +74,7 @@ fn get_ppid() -> u32 {
     })
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(unix, windows)))]
 fn get_ppid() -> u32 {
     *PPID.get_or_init(|| {
         eprintln!("warning: parent PID lookup not supported on this platform; all processes will share session '0'");
@@ -193,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(unix, windows))]
     fn ppid_is_nonzero() {
         assert!(get_ppid() > 0, "test runner must have a parent process");
     }

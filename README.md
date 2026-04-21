@@ -14,7 +14,13 @@ Each terminal window runs its own shell process. `reel` uses the parent shell's 
 
 ## Platform support
 
-`reel` is Linux-only. It reads `/proc/self/status` to obtain the parent shell's PID, which is not available on macOS or Windows.
+| Platform | Session isolation | Notes |
+|---|---|---|
+| Linux | per terminal window | `getppid()` via libc |
+| macOS | per terminal window | `getppid()` via libc |
+| Windows | per terminal window | `CreateToolhelp32Snapshot` |
+| other Unix (BSD, etc.) | per terminal window | `getppid()` via libc |
+| other | degraded — all windows share one session | PPID lookup not implemented; a warning is printed at startup |
 
 ## Installation
 
