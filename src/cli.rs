@@ -132,7 +132,10 @@ pub fn show_state(state: &State, session: &dyn SessionStore) {
         eprintln!("  header  {}: {}", k, v);
     }
     if let Some(body) = &state.body {
-        eprintln!("  body    {}", body);
+        let formatted = serde_json::from_str::<serde_json::Value>(body)
+            .map(|v| serde_json::to_string_pretty(&v).unwrap())
+            .unwrap_or_else(|_| body.clone());
+        eprintln!("  body    {}", formatted.replace('\n', "\n          "));
     }
     if !state.responses.is_empty() {
         eprintln!("  responses  {} stored", state.responses.len());
@@ -249,10 +252,14 @@ pub fn print_usage() {
     eprintln!("  -V / --version         show version");
     eprintln!();
     eprintln!("Template interpolation in files loaded by 'then':");
-    eprintln!("  ${{{{ status }}}}          HTTP status code of the previous response");
-    eprintln!("  ${{{{ body }}}}            raw body of the previous response");
-    eprintln!("  ${{{{ body.field.sub }}}}  dot-path into the JSON body");
-    eprintln!("  ${{{{ headers.name }}}}    response header value");
+    eprintln!("  ${{{{ status }}}}                  HTTP status code of the last response");
+    eprintln!("  ${{{{ body }}}}                    raw body of the last response");
+    eprintln!("  ${{{{ body.field.sub }}}}          dot-path into the last response body");
+    eprintln!("  ${{{{ headers.name }}}}            response header value from the last response");
+    eprintln!("  ${{{{ response[N].status }}}}      status of the Nth response (1-based)");
+    eprintln!("  ${{{{ response[N].body }}}}        raw body of the Nth response");
+    eprintln!("  ${{{{ response[N].body.field }}}}  dot-path into the Nth response body");
+    eprintln!("  ${{{{ response[N].headers.name }}}} header from the Nth response");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  reel method GET url https://httpbin.org/get send");
@@ -367,7 +374,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
                 }
                 let next = &args[i + 1];
                 if let Some(pos) = next.find(':') {
-                    let key = next[..pos].trim().to_lowercase();
+                    let key = next[..pos].trim().to_string();
                     if key.is_empty() {
                         bail!("error: header key cannot be empty (use KEY:VALUE or KEY VALUE)");
                     }
@@ -375,7 +382,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
                     commands.push(Command::Header(key, val));
                     i += 2;
                 } else if i + 2 < args.len() {
-                    commands.push(Command::Header(next.to_lowercase(), args[i + 2].clone()));
+                    commands.push(Command::Header(next.to_string(), args[i + 2].clone()));
                     i += 3;
                 } else {
                     bail!("error: 'header' requires KEY:VALUE or KEY VALUE");
@@ -482,8 +489,8 @@ pub fn run_commands(
                         );
                     }
                 } else {
-                    let prev = state.responses.last().cloned().unwrap();
-                    apply_interpolation(state, &prev)
+                    let responses = state.responses.clone();
+                    apply_interpolation(state, &responses)
                         .map_err(|e| anyhow::anyhow!("error in '{}': {}", path_str, e))?;
                 }
 
@@ -531,6 +538,11 @@ pub fn run_commands(
                 modified = true;
             }
             Command::Header(key, val) => {
+                // Case-insensitive dedup: remove existing key with the same name before inserting.
+                let existing = state.headers.keys().find(|k| k.to_lowercase() == key.to_lowercase()).cloned();
+                if let Some(old) = existing {
+                    state.headers.remove(&old);
+                }
                 state.headers.insert(key, val);
                 modified = true;
             }
@@ -667,19 +679,19 @@ mod tests {
     #[test]
     fn parse_header_colon_form() {
         let (cmds, _) = parse_args(&[s("header"), s("Content-Type:application/json")]).unwrap();
-        assert!(matches!(&cmds[0], Command::Header(k, v) if k == "content-type" && v == "application/json"));
+        assert!(matches!(&cmds[0], Command::Header(k, v) if k == "Content-Type" && v == "application/json"));
     }
 
     #[test]
     fn parse_header_colon_trims_whitespace() {
         let (cmds, _) = parse_args(&[s("header"), s("X-Foo: bar")]).unwrap();
-        assert!(matches!(&cmds[0], Command::Header(k, v) if k == "x-foo" && v == "bar"));
+        assert!(matches!(&cmds[0], Command::Header(k, v) if k == "X-Foo" && v == "bar"));
     }
 
     #[test]
     fn parse_header_two_token_form() {
         let (cmds, _) = parse_args(&args("header X-Foo bar")).unwrap();
-        assert!(matches!(&cmds[0], Command::Header(k, v) if k == "x-foo" && v == "bar"));
+        assert!(matches!(&cmds[0], Command::Header(k, v) if k == "X-Foo" && v == "bar"));
     }
 
     #[test]
@@ -823,7 +835,7 @@ mod tests {
 
         assert_eq!(state.method, Some("GET".to_string()));
         assert_eq!(state.url, Some("https://example.com".to_string()));
-        assert_eq!(state.headers.get("x-foo").map(String::as_str), Some("bar"));
+        assert_eq!(state.headers.get("X-Foo").map(String::as_str), Some("bar"));
         assert_eq!(session.save_count.get(), 1);
     }
 

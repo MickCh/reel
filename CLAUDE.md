@@ -25,7 +25,7 @@ Dependency direction: `cli` → `http`/`template`/`session` → `model`. No modu
 
 ```rust
 pub trait HttpClient {
-    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord, ()>;
+    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord>;
 }
 ```
 
@@ -87,11 +87,11 @@ struct ResponseRecord {
    - `load <PATH>` — replaces `state` wholesale from a JSON file
    - `save <PATH>` — writes current in-memory `state` to a preset file (no `responses` field)
    - `reset` — replaces `state` with `State::default()` and calls `session.delete()`
-   - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`; key normalised to lowercase
+   - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`; key stored as-is (original casing preserved); deduplication on insert is case-insensitive
    - `header-rm <KEY>` — removes one entry case-insensitively; warns if absent
    - `method`, `url`, `body` — overwrite the respective field; `url ""` (empty string) is rejected with an error
    - `send` — clears `state.responses`, executes via `http.execute()`; calls `session.save()` before printing body
-   - `then <PATH>` — loads a preset file, carries `state.responses` forward, applies template interpolation from the last response, executes via `http.execute()` and appends to `state.responses`; aborts the whole chain on failure; errors if preset contains `${{` expressions but there is no previous response
+   - `then <PATH>` — loads a preset file, carries `state.responses` forward, applies template interpolation against the full response history, executes via `http.execute()` and appends to `state.responses`; aborts the whole chain on failure; errors if preset contains `${{` expressions but there is no previous response
 4. If any mutation occurred without a following `send`/`then`, `session.save()` is called at end
 5. `show` and `response` (deferred during parsing) run after all commands, in that order
 
@@ -107,12 +107,18 @@ Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `
 
 | Expression | Resolves to |
 |---|---|
-| `status` | HTTP status code of the previous response (string) |
-| `body` | Raw body text of the previous response |
-| `body.<dot.path>` | Dot-path into the JSON body (e.g. `body.access.token`, `body.items.0.id`) |
-| `headers.<name>` | Response header value (e.g. `headers.content-type`) |
+| `status` | HTTP status code of the last response (string) |
+| `body` | Raw body text of the last response |
+| `body.<dot.path>` | Dot-path into the last response body (e.g. `body.access.token`, `body.items.0.id`) |
+| `headers.<name>` | Response header value from the last response (e.g. `headers.content-type`) |
+| `response[N].status` | HTTP status code of the Nth response (1-based) |
+| `response[N].body` | Raw body of the Nth response |
+| `response[N].body.<dot.path>` | Dot-path into the Nth response body |
+| `response[N].headers.<name>` | Response header value from the Nth response |
 
-If a placeholder cannot be resolved (missing key, non-JSON body, unclosed `${{`), the chain aborts immediately with an error. If a preset contains any `${{` but there is no previous response, `then` errors immediately rather than silently treating the placeholder as a literal string.
+The bare `body`/`status`/`headers.*` forms always refer to the **last** response. Use `response[N].*` to reach any earlier response in the chain by 1-based index.
+
+If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index, unclosed `${{`), the chain aborts immediately with an error. If a preset contains any `${{` but there is no previous response, `then` errors immediately rather than silently treating the placeholder as a literal string.
 
 ### Argument parsing
 
@@ -124,7 +130,7 @@ The `response` command peeks at the next token(s) to consume an optional `all`/i
 
 `fail`, `--insecure`, and `--dry-run` are pre-scanned before the loop and returned as `GlobalFlags`; they apply globally regardless of position. Their tokens are consumed and not added to `Vec<Command>`.
 
-`parse_args` returns `Result<(Vec<Command>, GlobalFlags), ()>`. `run_commands` returns `Result<ParseResult, ()>`. On `Err(())`, `main` calls `std::process::exit(1)`. All diagnostic output goes to stderr so it never pollutes piped output. `response headers` writes header data to stdout (it is data, not a diagnostic).
+`parse_args` returns `anyhow::Result<(Vec<Command>, GlobalFlags)>`. `run_commands` returns `anyhow::Result<ParseResult>`. On `Err(_)`, `main` prints the error message to stderr and calls `std::process::exit(1)`. All diagnostic output goes to stderr so it never pollutes piped output. `response headers` writes header data to stdout (it is data, not a diagnostic).
 
 ## Dependencies
 
@@ -161,6 +167,17 @@ Chaining smoke test:
 # step1.json: GET https://httpbin.org/get
 # step2.json: GET https://httpbin.org/anything, header X-Token: ${{ body.some.field }}
 ./target/debug/reel load step1.json send then step2.json response body | jq .headers
+```
+
+Multi-step chaining with indexed response access:
+
+```bash
+# login.json:   POST https://api.example.com/login  → returns { "accessToken": "..." }
+# profile.json: GET  https://api.example.com/me, header Authorization: Bearer ${{ body.accessToken }}
+# audit.json:   POST https://api.example.com/audit,
+#               header Authorization: Bearer ${{ response[1].body.accessToken }}
+#               (refers back to login response, not the profile response)
+./target/debug/reel load login.json send then profile.json then audit.json
 ```
 
 ## Extending the tool

@@ -43,7 +43,7 @@ Commands can be combined freely in a single invocation.
 | `body <BODY>` | Set request body |
 | `send` | Send the request using current session state |
 | `--dry-run` | Print the request that would be sent, without sending it (position-independent) |
-| `then <PATH>` | Load preset file, interpolate `${{ expr }}` from last response, and send |
+| `then <PATH>` | Load preset file, interpolate `${{ expr }}` from response history, and send |
 | `show` | Print the current session state |
 | `response [N\|all] [body\|headers]` | Show Nth response (default: last), or all; full JSON, body only, or headers only |
 | `reset` | Clear all session state |
@@ -158,7 +158,7 @@ All state mutations still take effect and are saved; only the HTTP call is skipp
 
 ### Chaining requests with `then`
 
-`then` loads a preset file, fills in `${{ expr }}` placeholders using the previous response, and sends the request immediately. This lets you chain dependent calls without scripting.
+`then` loads a preset file, fills in `${{ expr }}` placeholders using the full response history, and sends the request immediately. This lets you chain dependent calls without scripting.
 
 The first request in a chain is loaded explicitly with `load` and sent with `send`. This is intentional — it lets you inspect or modify the session state before committing to the chain.
 
@@ -170,24 +170,71 @@ Supported expressions in preset files:
 
 | Expression | Resolves to |
 |---|---|
-| `${{ status }}` | HTTP status code of the previous response |
-| `${{ body }}` | Raw response body |
-| `${{ body.some.field }}` | Dot-path into a JSON body (e.g. `body.access.token`, `body.items.0.id`) |
-| `${{ headers.content-type }}` | A response header value |
+| `${{ status }}` | HTTP status code of the **last** response |
+| `${{ body }}` | Raw body of the **last** response |
+| `${{ body.some.field }}` | Dot-path into the last response body (e.g. `body.access.token`, `body.items.0.id`) |
+| `${{ headers.content-type }}` | A header value from the last response |
+| `${{ response[N].status }}` | HTTP status code of the Nth response (1-based) |
+| `${{ response[N].body }}` | Raw body of the Nth response |
+| `${{ response[N].body.some.field }}` | Dot-path into the Nth response body |
+| `${{ response[N].headers.name }}` | A header value from the Nth response |
 
-Example preset (`step2.json`) that uses a token from the previous response:
+The bare `body`/`status`/`headers.*` forms always refer to the **last** response. Use `response[N].*` when you need to reach an earlier step in the chain.
+
+#### Two-step example
+
+`login.json` — obtain an access token:
+
+```json
+{
+  "method": "POST",
+  "url": "https://dummyjson.com/auth/login",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"username\": \"emilys\", \"password\": \"emilyspass\"}"
+}
+```
+
+`whoami.json` — fetch the current user's profile, injecting the token from the login response:
 
 ```json
 {
   "method": "GET",
-  "url": "https://api.example.com/profile",
+  "url": "https://dummyjson.com/user/me",
   "headers": {
-    "Authorization": "Bearer ${{ body.access_token }}"
+    "Authorization": "Bearer ${{ body.accessToken }}"
   }
 }
 ```
 
-If a placeholder cannot be resolved the chain aborts immediately with an error.
+```bash
+reel load login.json send then whoami.json
+```
+
+#### Three-step example: re-using an earlier response
+
+The third step needs the access token from the login response, not from the profile response that immediately preceded it. Use `response[1].*` to reach back to the first response.
+
+`search_users.json` — search for users, authenticated with the token from step 1:
+
+```json
+{
+  "method": "GET",
+  "url": "https://dummyjson.com/users/search?q=John",
+  "headers": {
+    "Authorization": "Bearer ${{ response[1].body.accessToken }}"
+  }
+}
+```
+
+```bash
+reel load login.json send then whoami.json then search_users.json
+```
+
+The bare `${{ body.* }}` / `${{ status }}` forms always refer to the immediately preceding response; `response[N].*` lets you reach any step by 1-based index.
+
+If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index) the chain aborts immediately with an error.
 
 ## Output
 
