@@ -1,8 +1,18 @@
 # reel
 
+[![CI](https://github.com/MickCh/reel/actions/workflows/ci.yml/badge.svg)](https://github.com/MickCh/reel/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust: 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org)
+
 A stateful HTTP client for the command line. Like `curl`, but it remembers your settings across invocations — per terminal window.
 
 The name comes from a film reel: each request is a frame, and the session threads them together into a single strip.
+
+## Why not curl or httpie?
+
+`curl` and `httpie` are stateless — every invocation starts from scratch. When iterating on an API (adjusting headers, changing the body, re-sending), you end up repeating most of the command each time or reaching for shell history.
+
+`reel` keeps the request state between calls in the same terminal, so you can set headers once, tweak the URL or body, and keep sending without rebuilding the full command.
 
 ## How sessions work
 
@@ -14,13 +24,13 @@ Each terminal window runs its own shell process. `reel` uses the parent shell's 
 
 ## Platform support
 
-| Platform | Session isolation | Notes |
-|---|---|---|
-| Linux | per terminal window | `getppid()` via libc |
-| macOS | per terminal window | `getppid()` via libc |
-| Windows | per terminal window | `CreateToolhelp32Snapshot` |
-| other Unix (BSD, etc.) | per terminal window | `getppid()` via libc |
-| other | degraded — all windows share one session | PPID lookup not implemented; a warning is printed at startup |
+| Platform | Session isolation |
+|---|---|
+| Linux | per terminal window |
+| macOS | per terminal window |
+| Windows | per terminal window |
+| other Unix (BSD, etc.) | per terminal window |
+| other | degraded — all windows share one session |
 
 ## Installation
 
@@ -84,26 +94,7 @@ reel send
 reel url https://api.example.com/posts send
 ```
 
-### Managing headers
-
-```bash
-reel header "Content-Type: application/json"
-reel header Authorization "Bearer mytoken"
-
-# Remove a single header without touching the rest of the session
-reel header-rm Authorization
-
-# Remove all headers at once
-reel header-rm-all
-
-# Both formats for adding are equivalent:
-reel header "Authorization: Bearer token"
-reel header Authorization "Bearer token"
-```
-
 ### Inspect responses
-
-The session stores responses automatically. A plain `send` replaces the stored list with a single response (you'll see a note confirming this); a chain (`send then … then …`) accumulates one response per step.
 
 ```bash
 reel response           # full JSON of the last response
@@ -231,8 +222,6 @@ The third step needs the access token from the login response, not from the prof
 ```bash
 reel load login.json send then whoami.json then search_users.json
 ```
-
-The bare `${{ body.* }}` / `${{ status }}` forms always refer to the immediately preceding response; `response[N].*` lets you reach any step by 1-based index.
 
 If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index) the chain aborts immediately with an error.
 

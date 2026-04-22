@@ -89,9 +89,12 @@ struct ResponseRecord {
    - `reset` — replaces `state` with `State::default()` and calls `session.delete()`
    - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`; key stored as-is (original casing preserved); deduplication on insert is case-insensitive
    - `header-rm <KEY>` — removes one entry case-insensitively; warns if absent
+   - `header-rm-all` — removes all entries from `state.headers`
    - `method`, `url`, `body` — overwrite the respective field; `url ""` (empty string) is rejected with an error
    - `send` — clears `state.responses`, executes via `http.execute()`; calls `session.save()` before printing body
    - `then <PATH>` — loads a preset file, carries `state.responses` forward, applies template interpolation against the full response history, executes via `http.execute()` and appends to `state.responses`; aborts the whole chain on failure; errors if preset contains `${{` expressions but there is no previous response
+   - `--dry-run` (GlobalFlag) — skips the HTTP call inside `send`/`then`; state mutations still occur and `session.save()` is still called; prints request details (method, URL, headers, body) to stderr
+   - `fail` (GlobalFlag) — after all commands complete, exits with code 1 if any `send` or `then` received a 4xx or 5xx response
 4. If any mutation occurred without a following `send`/`then`, `session.save()` is called at end
 5. `show` and `response` (deferred during parsing) run after all commands, in that order
 
@@ -147,46 +150,19 @@ The `response` command peeks at the next token(s) to consume an optional `all`/i
 ```bash
 cargo build              # dev build
 cargo build --release    # release build → target/release/reel
+cargo fmt --check        # formatting (no changes expected)
 cargo clippy             # linter (should produce no warnings)
 cargo test               # unit tests for model and template modules
 ```
 
-Quick smoke test (all in one shell invocation to share the same PPID session):
-
-```bash
-./target/debug/reel method GET url https://httpbin.org/get send > /dev/null \
-  && ./target/debug/reel response headers \
-  && ./target/debug/reel response body | jq .url \
-  && ./target/debug/reel header "X-Foo: bar" header-rm X-Foo show \
-  && ./target/debug/reel reset
-```
-
-Chaining smoke test:
-
-```bash
-# step1.json: GET https://httpbin.org/get
-# step2.json: GET https://httpbin.org/anything, header X-Token: ${{ body.some.field }}
-./target/debug/reel load step1.json send then step2.json response body | jq .headers
-```
-
-Multi-step chaining with indexed response access:
-
-```bash
-# login.json:   POST https://api.example.com/login  → returns { "accessToken": "..." }
-# profile.json: GET  https://api.example.com/me, header Authorization: Bearer ${{ body.accessToken }}
-# audit.json:   POST https://api.example.com/audit,
-#               header Authorization: Bearer ${{ response[1].body.accessToken }}
-#               (refers back to login response, not the profile response)
-./target/debug/reel load login.json send then profile.json then audit.json
-```
+Tests live in `model.rs` (State default/merge behaviour) and `template.rs` (placeholder resolution, error paths, dot-path traversal, indexed response access). There are no integration tests with real network calls — the `HttpClient` and `SessionStore` traits exist specifically to allow test doubles to be injected via `run_commands`.
 
 ## Extending the tool
 
-Likely next additions and where to put them:
+Likely next additions and where to put them. Implement only when explicitly requested.
 
 - **Named sessions** (`reel session <name>`) — symlink or alias over `save`/`load`
 - **Configurable timeout** (`reel timeout 30`) — currently hardcoded to 30 s; expose as a `State` field
-- **Response to file** (`reel response body > out.json`) — already works via stdout; no code change needed
 - **Query params** (`reel param key value`) — add `params: HashMap<String,String>` to `State`, pass to `.query()` on the request builder
 - **Auth shorthand** (`reel auth bearer <token>`) — sugar over `header Authorization "Bearer <token>"`
 - **Verbose mode** — print full request details before sending; flag in `State` or a CLI-only bool
