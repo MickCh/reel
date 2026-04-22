@@ -2,6 +2,19 @@
 name = "reel"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
+description = "A stateful CLI HTTP client that persists request state across invocations"
+license = "MIT"
+authors = ["Michal Chwirut"]
+repository = "https://github.com/MickCh/reel"
+homepage = "https://github.com/MickCh/reel"
+readme = "README.md"
+keywords = ["http", "cli", "curl", "rest", "client"]
+categories = ["command-line-utilities", "network-programming"]
+
+[[bin]]
+name = "reel"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
