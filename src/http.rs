@@ -59,7 +59,10 @@ impl HttpClient for ReqwestClient {
         };
 
         if state.body.is_some()
-            && !state.headers.keys().any(|k| k.eq_ignore_ascii_case("content-type"))
+            && !state
+                .headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("content-type"))
         {
             eprintln!("warning: body is set but Content-Type header is missing");
         }
@@ -87,7 +90,9 @@ impl HttpClient for ReqwestClient {
             }
         }
 
-        let body = resp.text().map_err(|e| anyhow::anyhow!("error reading response: {}", e))?;
+        let body = resp
+            .text()
+            .map_err(|e| anyhow::anyhow!("error reading response: {}", e))?;
 
         Ok(ResponseRecord {
             source: source.map(|s| s.to_string()),

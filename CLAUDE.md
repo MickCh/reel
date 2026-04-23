@@ -6,16 +6,22 @@
 
 ## Architecture
 
-Five modules under `src/`:
+Modules under `src/`:
 
 | File | Responsibility |
 |---|---|
 | `main.rs` | Entry point — wires modules together |
-| `model.rs` | `State`, `ResponseRecord` structs (pure data, no I/O) |
-| `session.rs` | `SessionStore` trait + `FileSessionStore` impl; `load_preset`/`save_preset`/`cleanup_old_sessions` free functions |
-| `template.rs` | Template interpolation engine (`${{ expr }}`) |
+| `model/mod.rs` | `State`, `ResponseRecord` structs (pure data, no I/O) |
+| `session/mod.rs` | `SessionStore` trait + `FileSessionStore` impl; `load_preset`/`save_preset`/`cleanup_old_sessions` free functions |
+| `template/mod.rs` | Template interpolation engine (`${{ expr }}`) |
 | `http.rs` | `HttpClient` trait + `ReqwestClient` impl |
-| `cli.rs` | `Command` enum, `parse_args`, `run_commands`, display functions |
+| `cli/mod.rs` | Re-exports public API of the `cli` submodules |
+| `cli/commands.rs` | `Command` enum, `ResponseTarget`, `ResponseView`, `GlobalFlags`, `ParseResult` types |
+| `cli/parser.rs` | `parse_args` and response target/view parsing helpers |
+| `cli/display.rs` | All display functions: `show_state`, `show_response`, `print_usage`, `format_status`, etc. |
+| `cli/runner.rs` | `run_commands` — command execution loop |
+
+Each module with tests has a companion `tests.rs` file (e.g. `cli/tests.rs`, `model/tests.rs`) declared via `#[cfg(test)] mod tests;` — tests are compiled as part of the module, retaining access to private items.
 
 Dependency direction: `cli` → `http`/`template`/`session` → `model`. No module depends on a layer above it.
 
@@ -46,7 +52,7 @@ pub trait SessionStore {
 
 Uses the parent shell PID as the session key. State is stored in `~/.reel/sessions/<ppid>.json`. The PPID is read once via `OnceLock<u32>` and cached for the process lifetime.
 
-Platform-specific PPID lookup is gated with `#[cfg(...)]` inside `get_ppid()` in `session.rs`:
+Platform-specific PPID lookup is gated with `#[cfg(...)]` inside `get_ppid()` in `session/mod.rs`:
 
 | Platform | Mechanism |
 |---|---|
@@ -155,7 +161,7 @@ cargo clippy             # linter (should produce no warnings)
 cargo test               # unit tests for model and template modules
 ```
 
-Tests live in `model.rs` (State default/merge behaviour) and `template.rs` (placeholder resolution, error paths, dot-path traversal, indexed response access). There are no integration tests with real network calls — the `HttpClient` and `SessionStore` traits exist specifically to allow test doubles to be injected via `run_commands`.
+Tests live in per-module `tests.rs` files (`model/tests.rs`, `template/tests.rs`, `session/tests.rs`, `cli/tests.rs`). `cli/tests.rs` contains `MockHttp` and `MockSession` test doubles injected via `run_commands` — there are no integration tests with real network calls.
 
 ## Extending the tool
 
@@ -167,7 +173,6 @@ Likely next additions and where to put them. Implement only when explicitly requ
 - **Auth shorthand** (`reel auth bearer <token>`) — sugar over `header Authorization "Bearer <token>"`
 - **Verbose mode** — print full request details before sending; flag in `State` or a CLI-only bool
 - **Session list/switch** — list `~/.reel/sessions/`, let user pick by number or name
-- **Mock HttpClient / SessionStore** — inject test doubles in `run_commands` for integration tests without network or disk
 
 ## Constraints to keep
 
