@@ -34,6 +34,14 @@ Each terminal window runs its own shell process. `reel` uses the parent shell's 
 
 ## Installation
 
+### From GitHub (recommended)
+
+```bash
+cargo install --git https://github.com/MickCh/reel.git
+```
+
+### From source
+
 ```bash
 cargo build --release
 sudo cp target/release/reel /usr/local/bin/
