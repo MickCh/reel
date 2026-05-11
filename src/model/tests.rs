@@ -28,6 +28,58 @@ fn state_round_trips_through_json() {
 }
 
 #[test]
+fn state_deserializes_native_json_object_body() {
+    let json = r#"{"url":"https://x.com","body":{"field":"value","nested":{"n":1}}}"#;
+    let s: State = serde_json::from_str(json).unwrap();
+    assert_eq!(s.body.as_deref(), Some(r#"{"field":"value","nested":{"n":1}}"#));
+}
+
+#[test]
+fn state_deserializes_native_json_array_body() {
+    let json = r#"{"url":"https://x.com","body":[1,2,3]}"#;
+    let s: State = serde_json::from_str(json).unwrap();
+    assert_eq!(s.body.as_deref(), Some("[1,2,3]"));
+}
+
+#[test]
+fn state_deserializes_plain_string_body() {
+    let json = r#"{"url":"https://x.com","body":"hello world"}"#;
+    let s: State = serde_json::from_str(json).unwrap();
+    assert_eq!(s.body.as_deref(), Some("hello world"));
+}
+
+#[test]
+fn state_deserializes_escaped_json_string_body() {
+    let json = r#"{"url":"https://x.com","body":"{\"field\":\"value\"}"}"#;
+    let s: State = serde_json::from_str(json).unwrap();
+    assert_eq!(s.body.as_deref(), Some(r#"{"field":"value"}"#));
+}
+
+#[test]
+fn state_serializes_json_body_as_native_object() {
+    let mut s = State::default();
+    s.body = Some(r#"{"key":"val"}"#.to_string());
+    let json = serde_json::to_string(&s).unwrap();
+    assert!(json.contains(r#""body":{"key":"val"}"#));
+}
+
+#[test]
+fn state_serializes_non_json_body_as_string() {
+    let mut s = State::default();
+    s.body = Some("plain text".to_string());
+    let json = serde_json::to_string(&s).unwrap();
+    assert!(json.contains(r#""body":"plain text""#));
+}
+
+#[test]
+fn state_serializes_json_array_body_as_native_array() {
+    let mut s = State::default();
+    s.body = Some("[1,2,3]".to_string());
+    let json = serde_json::to_string(&s).unwrap();
+    assert!(json.contains(r#""body":[1,2,3]"#));
+}
+
+#[test]
 fn state_omitted_responses_deserializes_as_empty() {
     let json = r#"{"method":"GET","url":"https://x.com","headers":{}}"#;
     let s: State = serde_json::from_str(json).unwrap();
