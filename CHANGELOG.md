@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-03
+
 ### Added
 
 - Template expressions for request history: `request.method`, `request.url`, `request.body`, `request.body.<dot.path>`, `request.headers.<name>`, and indexed `request[N].*` variants. Requests are captured after interpolation, so they reflect what was actually sent, and share the same 1-based index as responses.
@@ -32,5 +34,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Cross-platform PPID-based session isolation: Linux/macOS/BSD via `libc::getppid()`, Windows via `CreateToolhelp32Snapshot`
 - CI on Linux, macOS, and Windows via GitHub Actions
 
-[Unreleased]: https://github.com/MickCh/reel/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/MickCh/reel/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/MickCh/reel/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/MickCh/reel/releases/tag/v0.1.0
