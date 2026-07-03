@@ -40,6 +40,32 @@ pub struct ResponseRecord {
     pub body: String,
 }
 
+// A snapshot of a request as it was actually sent (after template interpolation).
+// Stored alongside each response so templates can reference `request.*`.
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct RequestRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none", with = "body_serde", default)]
+    pub body: Option<String>,
+}
+
+impl RequestRecord {
+    // Capture the request fields of `state` as they stand right before sending.
+    pub fn from_state(state: &State) -> Self {
+        Self {
+            method: state.method.clone(),
+            url: state.url.clone(),
+            headers: state.headers.clone(),
+            body: state.body.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct State {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,6 +76,8 @@ pub struct State {
     pub headers: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none", with = "body_serde", default)]
     pub body: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub requests: Vec<RequestRecord>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub responses: Vec<ResponseRecord>,
 }

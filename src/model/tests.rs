@@ -31,7 +31,10 @@ fn state_round_trips_through_json() {
 fn state_deserializes_native_json_object_body() {
     let json = r#"{"url":"https://x.com","body":{"field":"value","nested":{"n":1}}}"#;
     let s: State = serde_json::from_str(json).unwrap();
-    assert_eq!(s.body.as_deref(), Some(r#"{"field":"value","nested":{"n":1}}"#));
+    assert_eq!(
+        s.body.as_deref(),
+        Some(r#"{"field":"value","nested":{"n":1}}"#)
+    );
 }
 
 #[test]

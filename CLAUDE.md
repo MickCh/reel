@@ -72,7 +72,15 @@ struct State {
     url:       Option<String>,
     headers:   HashMap<String, String>,   // keys stored as-is from session/preset files
     body:      Option<String>,
+    requests:  Vec<RequestRecord>,    // populated by send/then, never set by the user
     responses: Vec<ResponseRecord>,   // populated by send/then, never set by the user
+}
+
+struct RequestRecord {
+    method:  Option<String>,   // snapshot of the request as actually sent
+    url:     Option<String>,   // (after template interpolation)
+    headers: HashMap<String, String>,
+    body:    Option<String>,
 }
 
 struct ResponseRecord {
@@ -83,7 +91,7 @@ struct ResponseRecord {
 }
 ```
 
-`responses` is part of `State` so it round-trips through the session file automatically. Preset files (used with `load` or `then`) omit this field — `serde` deserialises it as an empty `Vec`. Old session files with a `last` field are silently ignored by serde. The `headers` field also has `#[serde(default)]`, so preset files that omit `headers` entirely are valid and deserialise to an empty map.
+`requests` and `responses` are part of `State` so they round-trip through the session file automatically. Each `send`/`then` pushes one `RequestRecord` and one `ResponseRecord`, keeping the two vectors index-aligned (`request[N]` is the request that produced `response[N]`). The `RequestRecord` captures the request **after** template interpolation, so `request.*` reflects what was actually sent. Preset files (used with `load` or `then`) omit both fields — `serde` deserialises them as empty `Vec`s. Old session files with a `last` field are silently ignored by serde. The `headers` field also has `#[serde(default)]`, so preset files that omit `headers` entirely are valid and deserialise to an empty map.
 
 ### State lifecycle
 
@@ -91,14 +99,14 @@ struct ResponseRecord {
 2. `parse_args` processes all CLI arguments left-to-right and returns `(Vec<Command>, GlobalFlags)`; no I/O here
 3. `run_commands` executes commands in order, mutating `state`:
    - `load <PATH>` — replaces `state` wholesale from a JSON file
-   - `save <PATH>` — writes current in-memory `state` to a preset file (no `responses` field)
+   - `save <PATH>` — writes current in-memory `state` to a preset file (no `requests`/`responses` fields)
    - `reset` — replaces `state` with `State::default()` and calls `session.delete()`
    - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`; key stored as-is (original casing preserved); deduplication on insert is case-insensitive
    - `header-rm <KEY>` — removes one entry case-insensitively; warns if absent
    - `header-rm-all` — removes all entries from `state.headers`
    - `method`, `url`, `body` — overwrite the respective field; `url ""` (empty string) is rejected with an error
-   - `send` — clears `state.responses`, executes via `http.execute()`; calls `session.save()` before printing body
-   - `then <PATH>` — loads a preset file, carries `state.responses` forward, applies template interpolation against the full response history, executes via `http.execute()` and appends to `state.responses`; aborts the whole chain on failure; errors if preset contains `${{` expressions but there is no previous response
+   - `send` — clears `state.requests`/`state.responses`, executes via `http.execute()`, captures a `RequestRecord` of what was sent; calls `session.save()` before printing body
+   - `then <PATH>` — loads a preset file, carries `state.requests`/`state.responses` forward, applies template interpolation against the full request/response history (plus environment variables), captures a `RequestRecord` of the interpolated request, executes via `http.execute()`, and appends to `state.requests`/`state.responses`; aborts the whole chain on failure. Interpolation runs unconditionally; a placeholder that references missing history (e.g. `${{ body }}` with no previous response) or a missing env var aborts the chain with an error. Env-only presets (`${{ env.* }}`) work even with no prior response.
    - `--dry-run` (GlobalFlag) — skips the HTTP call inside `send`/`then`; state mutations still occur and `session.save()` is still called; prints request details (method, URL, headers, body) to stderr
    - `fail` (GlobalFlag) — after all commands complete, exits with code 1 if any `send` or `then` received a 4xx or 5xx response
 4. If any mutation occurred without a following `send`/`then`, `session.save()` is called at end
@@ -124,10 +132,17 @@ Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `
 | `response[N].body` | Raw body of the Nth response |
 | `response[N].body.<dot.path>` | Dot-path into the Nth response body |
 | `response[N].headers.<name>` | Response header value from the Nth response |
+| `request.method` / `request.url` / `request.body` | Field of the last request (as actually sent) |
+| `request.body.<dot.path>` | Dot-path into the last request body |
+| `request.headers.<name>` | Request header value from the last request (case-insensitive) |
+| `request[N].<field>` | Any of the above `request` fields for the Nth request (1-based) |
+| `env.<NAME>` | Value of environment variable `NAME` |
 
-The bare `body`/`status`/`headers.*` forms always refer to the **last** response. Use `response[N].*` to reach any earlier response in the chain by 1-based index.
+The bare `body`/`status`/`headers.*` forms always refer to the **last** response; bare `request.*` refers to the **last** request. Use `response[N].*` / `request[N].*` to reach any earlier entry in the chain by 1-based index. Requests and responses share the same 1-based index (`request[N]` is the request that produced `response[N]`). Request records are captured *after* interpolation, so `request.*` reflects the values actually sent.
 
-If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index, unclosed `${{`), the chain aborts immediately with an error. If a preset contains any `${{` but there is no previous response, `then` errors immediately rather than silently treating the placeholder as a literal string.
+`env.*` reads the process environment and is independent of history, so a preset that only uses `${{ env.* }}` interpolates successfully even with no previous request/response.
+
+If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index, unset environment variable, unclosed `${{`), the chain aborts immediately with an error. Interpolation is always attempted; a placeholder referencing history that does not exist yet (e.g. `${{ body }}` before any `send`) aborts with a "no previous response/request" error rather than being treated as a literal string.
 
 ### Argument parsing
 

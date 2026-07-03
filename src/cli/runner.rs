@@ -1,9 +1,9 @@
 use anyhow::{Result, bail};
 
 use crate::http::HttpClient;
-use crate::model::State;
+use crate::model::{RequestRecord, State};
 use crate::session::{SessionStore, load_preset, save_preset};
-use crate::template::apply_interpolation;
+use crate::template::{Context, apply_interpolation};
 
 use super::commands::{Command, GlobalFlags, ParseResult, ResponseTarget, ResponseView};
 use super::display::{format_status, print_dry_run};
@@ -28,7 +28,9 @@ pub fn run_commands(
                 }
                 let had_responses = !state.responses.is_empty();
                 state.responses.clear();
+                state.requests.clear();
                 let record = http.execute(state, None)?;
+                state.requests.push(RequestRecord::from_state(state));
                 state.responses.push(record);
                 session.save(state);
                 let last = state.responses.last().unwrap();
@@ -51,27 +53,23 @@ pub fn run_commands(
             }
             Command::Then(path) => {
                 let path_str = path.to_string_lossy().into_owned();
+                let prev_requests = state.requests.clone();
                 let prev_responses = state.responses.clone();
 
                 let mut loaded = load_preset(&path)?;
-                loaded.responses = prev_responses;
+                loaded.requests = prev_requests.clone();
+                loaded.responses = prev_responses.clone();
                 *state = loaded;
 
-                if state.responses.is_empty() {
-                    let has_template = state.url.as_deref().is_some_and(|u| u.contains("${{"))
-                        || state.body.as_deref().is_some_and(|b| b.contains("${{"))
-                        || state.headers.values().any(|v| v.contains("${{"));
-                    if has_template {
-                        bail!(
-                            "error: '{}' uses template expressions but there is no previous response",
-                            path_str
-                        );
-                    }
-                } else {
-                    let responses = state.responses.clone();
-                    apply_interpolation(state, &responses)
-                        .map_err(|e| anyhow::anyhow!("error in '{}': {}", path_str, e))?;
-                }
+                // Interpolate against the prior request/response history and the
+                // environment. Placeholders referencing missing history (or a
+                // missing env var) abort the chain here.
+                let ctx = Context {
+                    requests: &prev_requests,
+                    responses: &prev_responses,
+                };
+                apply_interpolation(state, &ctx)
+                    .map_err(|e| anyhow::anyhow!("error in '{}': {}", path_str, e))?;
 
                 if flags.dry_run {
                     eprintln!("(dry-run: {})", path_str);
@@ -80,6 +78,7 @@ pub fn run_commands(
                 }
 
                 let record = http.execute(state, Some(&path_str))?;
+                state.requests.push(RequestRecord::from_state(state));
                 state.responses.push(record);
                 session.save(state);
                 let last = state.responses.last().unwrap();

@@ -61,7 +61,7 @@ Commands can be combined freely in a single invocation.
 | `body <BODY>` | Set request body |
 | `send` | Send the request using current session state |
 | `--dry-run` | Print the request that would be sent, without sending it (position-independent) |
-| `then <PATH>` | Load preset file, interpolate `${{ expr }}` from response history, and send |
+| `then <PATH>` | Load preset file, interpolate `${{ expr }}` from request/response history and environment, and send |
 | `show` | Print the current session state |
 | `response [N\|all] [body\|headers]` | Show Nth response (default: last), or all; full JSON, body only, or headers only |
 | `reset` | Clear all session state |
@@ -157,7 +157,7 @@ All state mutations still take effect and are saved; only the HTTP call is skipp
 
 ### Chaining requests with `then`
 
-`then` loads a preset file, fills in `${{ expr }}` placeholders using the full response history, and sends the request immediately. This lets you chain dependent calls without scripting.
+`then` loads a preset file, fills in `${{ expr }}` placeholders using the full request/response history and environment variables, and sends the request immediately. This lets you chain dependent calls without scripting.
 
 The first request in a chain is loaded explicitly with `load` and sent with `send`. This is intentional — it lets you inspect or modify the session state before committing to the chain.
 
@@ -177,8 +177,17 @@ Supported expressions in preset files:
 | `${{ response[N].body }}` | Raw body of the Nth response |
 | `${{ response[N].body.some.field }}` | Dot-path into the Nth response body |
 | `${{ response[N].headers.name }}` | A header value from the Nth response |
+| `${{ request.method }}` / `${{ request.url }}` / `${{ request.body }}` | A field of the **last** request, exactly as it was sent |
+| `${{ request.body.some.field }}` | Dot-path into the last request body |
+| `${{ request.headers.name }}` | A header value from the last request (case-insensitive) |
+| `${{ request[N].url }}` | Any `request` field for the Nth request (1-based) |
+| `${{ env.NAME }}` | Value of the environment variable `NAME` |
 
-The bare `body`/`status`/`headers.*` forms always refer to the **last** response. Use `response[N].*` when you need to reach an earlier step in the chain.
+The bare `body`/`status`/`headers.*` forms always refer to the **last** response, and bare `request.*` to the **last** request. Use `response[N].*` / `request[N].*` when you need to reach an earlier step in the chain — requests and responses share the same index, so `request[N]` is the request that produced `response[N]`.
+
+Request values are captured **after** interpolation, so `${{ request.* }}` reflects what was actually sent (useful for echoing back an id, correlation header, or URL you built in a previous step).
+
+`${{ env.NAME }}` reads a variable from the process environment — handy for keeping secrets out of preset files (`"Authorization": "Bearer ${{ env.API_TOKEN }}"`). Because it does not depend on history, a preset that uses only `env.*` interpolates fine even as the first request in a chain. A referenced variable that is not set aborts the chain.
 
 #### Two-step example
 
@@ -231,7 +240,43 @@ The third step needs the access token from the login response, not from the prof
 reel load login.json send then whoami.json then search_users.json
 ```
 
-If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index) the chain aborts immediately with an error.
+#### Environment variables and request references
+
+Preset files can pull secrets from the environment and echo back values from earlier requests:
+
+`create.json` — create a resource, authenticating with a token from the environment:
+
+```json
+{
+  "method": "POST",
+  "url": "https://api.example.com/orders",
+  "headers": {
+    "content-type": "application/json",
+    "Authorization": "Bearer ${{ env.API_TOKEN }}",
+    "Idempotency-Key": "order-42"
+  },
+  "body": "{\"item\": \"widget\"}"
+}
+```
+
+`confirm.json` — confirm using the id from the response and the idempotency key from the previous request:
+
+```json
+{
+  "method": "POST",
+  "url": "https://api.example.com/orders/${{ body.id }}/confirm",
+  "headers": {
+    "Authorization": "Bearer ${{ env.API_TOKEN }}",
+    "Idempotency-Key": "${{ request.headers.Idempotency-Key }}"
+  }
+}
+```
+
+```bash
+API_TOKEN=sk-live-... reel load create.json send then confirm.json
+```
+
+If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index, or unset environment variable) the chain aborts immediately with an error.
 
 ## Output
 

@@ -228,6 +228,11 @@ pub fn print_usage() {
     eprintln!("  ${{{{ response[N].body }}}}        raw body of the Nth response");
     eprintln!("  ${{{{ response[N].body.field }}}}  dot-path into the Nth response body");
     eprintln!("  ${{{{ response[N].headers.name }}}} header from the Nth response");
+    eprintln!("  ${{{{ request.url }}}}             URL of the last request (also .method, .body)");
+    eprintln!("  ${{{{ request.body.field }}}}      dot-path into the last request body");
+    eprintln!("  ${{{{ request.headers.name }}}}    header value from the last request");
+    eprintln!("  ${{{{ request[N].url }}}}          field of the Nth request (1-based)");
+    eprintln!("  ${{{{ env.NAME }}}}                value of environment variable NAME");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  reel method GET url https://httpbin.org/get send");

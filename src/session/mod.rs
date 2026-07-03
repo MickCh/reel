@@ -171,6 +171,7 @@ pub fn cleanup_old_sessions() {
 
 pub fn save_preset(state: &State, path: &Path) -> anyhow::Result<()> {
     let mut to_save = state.clone();
+    to_save.requests.clear();
     to_save.responses.clear();
     let content = serde_json::to_string_pretty(&to_save).unwrap();
     fs::write(path, content)
