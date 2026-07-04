@@ -1,10 +1,9 @@
 use super::commands::{Command, ParseResult, ResponseTarget, ResponseView};
 use super::*;
 use crate::http::HttpClient;
-use crate::model::{ResponseRecord, State};
+use crate::model::{Request, ResponseRecord, State};
 use crate::session::SessionStore;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::path::Path;
 
 // --- mocks ---
@@ -19,7 +18,7 @@ impl MockHttp {
             response: Ok(ResponseRecord {
                 source: None,
                 status,
-                headers: HashMap::new(),
+                headers: Default::default(),
                 body: "{}".to_string(),
             }),
         }
@@ -31,7 +30,7 @@ impl MockHttp {
 }
 
 impl HttpClient for MockHttp {
-    fn execute(&self, _state: &State, source: Option<&str>) -> anyhow::Result<ResponseRecord> {
+    fn execute(&self, _request: &Request, source: Option<&str>) -> anyhow::Result<ResponseRecord> {
         self.response
             .clone()
             .map(|mut r| {
@@ -53,9 +52,10 @@ impl SessionStore for MockSession {
     fn load(&self) -> State {
         State::default()
     }
-    fn save(&self, state: &State) {
+    fn save(&self, state: &State) -> anyhow::Result<()> {
         self.save_count.set(self.save_count.get() + 1);
         *self.last_saved.borrow_mut() = Some(state.clone());
+        Ok(())
     }
     fn delete(&self) {
         self.delete_count.set(self.delete_count.get() + 1);
@@ -271,9 +271,9 @@ fn method_url_header_saves_session() {
     )
     .unwrap();
 
-    assert_eq!(state.method, Some("GET".to_string()));
-    assert_eq!(state.url, Some("https://example.com".to_string()));
-    assert_eq!(state.headers.get("X-Foo").map(String::as_str), Some("bar"));
+    assert_eq!(state.request.method, Some("GET".to_string()));
+    assert_eq!(state.request.url, Some("https://example.com".to_string()));
+    assert_eq!(state.request.headers.get("X-Foo"), Some("bar"));
     assert_eq!(session.save_count.get(), 1);
 }
 
@@ -282,7 +282,7 @@ fn send_calls_http_and_saves() {
     let http = MockHttp::ok(200);
     let session = MockSession::default();
     let mut state = State::default();
-    state.url = Some("https://example.com".to_string());
+    state.request.url = Some("https://example.com".to_string());
 
     run("send", &mut state, &http, &session).unwrap();
 
@@ -296,7 +296,7 @@ fn send_http_failure_returns_err() {
     let http = MockHttp::err();
     let session = MockSession::default();
     let mut state = State::default();
-    state.url = Some("https://example.com".to_string());
+    state.request.url = Some("https://example.com".to_string());
 
     assert!(run("send", &mut state, &http, &session).is_err());
 }
@@ -306,7 +306,7 @@ fn fail_flag_on_4xx_returns_err() {
     let http = MockHttp::ok(404);
     let session = MockSession::default();
     let mut state = State::default();
-    state.url = Some("https://example.com".to_string());
+    state.request.url = Some("https://example.com".to_string());
 
     let (cmds, flags) = parse_args(&args("fail send")).unwrap();
     assert!(run_commands(cmds, &flags, &mut state, &http, &session).is_err());
@@ -317,7 +317,7 @@ fn fail_flag_on_2xx_succeeds() {
     let http = MockHttp::ok(200);
     let session = MockSession::default();
     let mut state = State::default();
-    state.url = Some("https://example.com".to_string());
+    state.request.url = Some("https://example.com".to_string());
 
     let (cmds, flags) = parse_args(&args("fail send")).unwrap();
     assert!(run_commands(cmds, &flags, &mut state, &http, &session).is_ok());
@@ -328,7 +328,7 @@ fn dry_run_skips_http() {
     let http = MockHttp::err(); // would fail if called
     let session = MockSession::default();
     let mut state = State::default();
-    state.url = Some("https://example.com".to_string());
+    state.request.url = Some("https://example.com".to_string());
 
     let (cmds, flags) = parse_args(&args("--dry-run send")).unwrap();
     run_commands(cmds, &flags, &mut state, &http, &session).unwrap();
@@ -342,13 +342,13 @@ fn reset_clears_state_and_deletes_session() {
     let http = MockHttp::ok(200);
     let session = MockSession::default();
     let mut state = State::default();
-    state.method = Some("POST".to_string());
-    state.url = Some("https://example.com".to_string());
+    state.request.method = Some("POST".to_string());
+    state.request.url = Some("https://example.com".to_string());
 
     run("reset", &mut state, &http, &session).unwrap();
 
-    assert!(state.method.is_none());
-    assert!(state.url.is_none());
+    assert!(state.request.method.is_none());
+    assert!(state.request.url.is_none());
     assert_eq!(session.delete_count.get(), 1);
     assert_eq!(session.save_count.get(), 0);
 }
@@ -358,11 +358,14 @@ fn header_rm_removes_existing() {
     let http = MockHttp::ok(200);
     let session = MockSession::default();
     let mut state = State::default();
-    state.headers.insert("x-foo".to_string(), "bar".to_string());
+    state
+        .request
+        .headers
+        .insert("x-foo".to_string(), "bar".to_string());
 
     run("header-rm x-foo", &mut state, &http, &session).unwrap();
 
-    assert!(!state.headers.contains_key("x-foo"));
+    assert!(state.request.headers.get("x-foo").is_none());
     assert_eq!(session.save_count.get(), 1);
 }
 
@@ -371,12 +374,18 @@ fn header_rm_all_clears_all_headers() {
     let http = MockHttp::ok(200);
     let session = MockSession::default();
     let mut state = State::default();
-    state.headers.insert("x-a".to_string(), "1".to_string());
-    state.headers.insert("x-b".to_string(), "2".to_string());
+    state
+        .request
+        .headers
+        .insert("x-a".to_string(), "1".to_string());
+    state
+        .request
+        .headers
+        .insert("x-b".to_string(), "2".to_string());
 
     run("header-rm-all", &mut state, &http, &session).unwrap();
 
-    assert!(state.headers.is_empty());
+    assert!(state.request.headers.is_empty());
     assert_eq!(session.save_count.get(), 1);
 }
 
@@ -396,18 +405,18 @@ fn send_clears_previous_responses() {
     let http = MockHttp::ok(201);
     let session = MockSession::default();
     let mut state = State::default();
-    state.url = Some("https://example.com".to_string());
+    state.request.url = Some("https://example.com".to_string());
     // Pre-load two fake responses
     state.responses.push(ResponseRecord {
         source: None,
         status: 200,
-        headers: HashMap::new(),
+        headers: Default::default(),
         body: "old".to_string(),
     });
     state.responses.push(ResponseRecord {
         source: None,
         status: 200,
-        headers: HashMap::new(),
+        headers: Default::default(),
         body: "old2".to_string(),
     });
 

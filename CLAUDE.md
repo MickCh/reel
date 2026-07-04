@@ -11,7 +11,7 @@ Modules under `src/`:
 | File | Responsibility |
 |---|---|
 | `main.rs` | Entry point — wires modules together |
-| `model/mod.rs` | `State`, `ResponseRecord` structs (pure data, no I/O) |
+| `model/mod.rs` | `Headers`, `Request`, `ResponseRecord`, `State` structs (pure data, no I/O) |
 | `session/mod.rs` | `SessionStore` trait + `FileSessionStore` impl; `load_preset`/`save_preset`/`cleanup_old_sessions` free functions |
 | `template/mod.rs` | Template interpolation engine (`${{ expr }}`) |
 | `http.rs` | `HttpClient` trait + `ReqwestClient` impl |
@@ -27,20 +27,20 @@ Dependency direction: `cli` → `http`/`template`/`session` → `model`. No modu
 
 ### Key traits
 
-**`http::HttpClient`** — abstracts HTTP execution. `run_commands` receives `&dyn HttpClient`, making it testable without real network calls.
+**`http::HttpClient`** — abstracts HTTP execution. `run_commands` receives `&dyn HttpClient`, making it testable without real network calls. It takes only the `Request` — the HTTP layer never sees session history. `http.rs` also exposes `status_reason(code)` (a thin wrapper over `reqwest::StatusCode::canonical_reason`), used by `cli/display.rs` to format status lines.
 
 ```rust
 pub trait HttpClient {
-    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord>;
+    fn execute(&self, request: &Request, source: Option<&str>) -> Result<ResponseRecord>;
 }
 ```
 
-**`session::SessionStore`** — abstracts session persistence. `run_commands` receives `&dyn SessionStore`.
+**`session::SessionStore`** — abstracts session persistence. `run_commands` receives `&dyn SessionStore`. `save` returns `Result` (I/O failure aborts the command chain rather than panicking).
 
 ```rust
 pub trait SessionStore {
     fn load(&self) -> State;
-    fn save(&self, state: &State);
+    fn save(&self, state: &State) -> Result<()>;
     fn delete(&self);
     fn path(&self) -> &Path;
 }
@@ -67,31 +67,31 @@ The `SessionStore` trait itself is platform-neutral; only the internal `get_ppid
 ### Data model
 
 ```rust
-struct State {
-    method:    Option<String>,
-    url:       Option<String>,
-    headers:   HashMap<String, String>,   // keys stored as-is from session/preset files
-    body:      Option<String>,
-    requests:  Vec<RequestRecord>,    // populated by send/then, never set by the user
-    responses: Vec<ResponseRecord>,   // populated by send/then, never set by the user
+struct Headers(HashMap<String, String>);  // newtype: case-insensitive get/insert/remove,
+                                          // original casing preserved; #[serde(transparent)]
+
+struct Request {                   // the request being built — and, unchanged in shape,
+    method:  Option<String>,       // the history snapshot of a request as actually sent
+    url:     Option<String>,       // (after template interpolation)
+    headers: Headers,
+    body:    Option<String>,
 }
 
-struct RequestRecord {
-    method:  Option<String>,   // snapshot of the request as actually sent
-    url:     Option<String>,   // (after template interpolation)
-    headers: HashMap<String, String>,
-    body:    Option<String>,
+struct State {
+    request:   Request,            // #[serde(flatten)] — session files keep their flat shape
+    requests:  Vec<Request>,       // populated by send/then, never set by the user
+    responses: Vec<ResponseRecord>,// populated by send/then, never set by the user
 }
 
 struct ResponseRecord {
     source:  Option<String>,   // preset file path for `then`, None for plain `send`
     status:  u16,
-    headers: HashMap<String, String>,
+    headers: Headers,
     body:    String,
 }
 ```
 
-`requests` and `responses` are part of `State` so they round-trip through the session file automatically. Each `send`/`then` pushes one `RequestRecord` and one `ResponseRecord`, keeping the two vectors index-aligned (`request[N]` is the request that produced `response[N]`). The `RequestRecord` captures the request **after** template interpolation, so `request.*` reflects what was actually sent. Preset files (used with `load` or `then`) omit both fields — `serde` deserialises them as empty `Vec`s. Old session files with a `last` field are silently ignored by serde. The `headers` field also has `#[serde(default)]`, so preset files that omit `headers` entirely are valid and deserialise to an empty map.
+All case-insensitive header semantics (lookup, insert dedup, removal) live in `Headers` — callers never scan for matching keys themselves. `requests` and `responses` are part of `State` so they round-trip through the session file automatically. Each `send`/`then` pushes one `Request` snapshot and one `ResponseRecord`, keeping the two vectors index-aligned (`request[N]` is the request that produced `response[N]`). The snapshot is captured **after** template interpolation, so `request.*` reflects what was actually sent. Preset files (used with `load` or `then`) omit both fields — `serde` deserialises them as empty `Vec`s. Old session files with a `last` field are silently ignored by serde. The `headers` field has `#[serde(default)]` and is skipped when empty, so preset files that omit `headers` entirely are valid and deserialise to an empty map.
 
 ### State lifecycle
 
@@ -99,15 +99,17 @@ struct ResponseRecord {
 2. `parse_args` processes all CLI arguments left-to-right and returns `(Vec<Command>, GlobalFlags)`; no I/O here
 3. `run_commands` executes commands in order, mutating `state`:
    - `load <PATH>` — replaces `state` wholesale from a JSON file
-   - `save <PATH>` — writes current in-memory `state` to a preset file (no `requests`/`responses` fields)
+   - `save <PATH>` — writes the current in-memory `state.request` to a preset file (never `requests`/`responses`); a write failure aborts the chain with an error
    - `reset` — replaces `state` with `State::default()` and calls `session.delete()`
-   - `header <KEY:VALUE>` — inserts or overwrites one entry in `state.headers`; key stored as-is (original casing preserved); deduplication on insert is case-insensitive
-   - `header-rm <KEY>` — removes one entry case-insensitively; warns if absent
-   - `header-rm-all` — removes all entries from `state.headers`
-   - `method`, `url`, `body` — overwrite the respective field; `url ""` (empty string) is rejected with an error
-   - `send` — clears `state.requests`/`state.responses`, executes via `http.execute()`, captures a `RequestRecord` of what was sent; calls `session.save()` before printing body
-   - `then <PATH>` — loads a preset file, carries `state.requests`/`state.responses` forward, applies template interpolation against the full request/response history (plus environment variables), captures a `RequestRecord` of the interpolated request, executes via `http.execute()`, and appends to `state.requests`/`state.responses`; aborts the whole chain on failure. Interpolation runs unconditionally; a placeholder that references missing history (e.g. `${{ body }}` with no previous response) or a missing env var aborts the chain with an error. Env-only presets (`${{ env.* }}`) work even with no prior response.
-   - `--dry-run` (GlobalFlag) — skips the HTTP call inside `send`/`then`; state mutations still occur and `session.save()` is still called; prints request details (method, URL, headers, body) to stderr
+   - `header <KEY:VALUE>` — `Headers::insert`: key stored as-is (original casing preserved); deduplication on insert is case-insensitive
+   - `header-rm <KEY>` — `Headers::remove` (case-insensitive); warns if absent
+   - `header-rm-all` — removes all entries from `state.request.headers`
+   - `method`, `url`, `body` — overwrite the respective `state.request` field; `url ""` (empty string) is rejected with an error
+   - `send` — clears `state.requests`/`state.responses`, executes via `http.execute()`, pushes a snapshot of `state.request`; calls `session.save()` before printing body
+   - `then <PATH>` — replaces `state.request` from a preset file (history stays in place), applies template interpolation against the full request/response history (plus environment variables), executes via `http.execute()`, and appends the interpolated request snapshot and response to `state.requests`/`state.responses`; aborts the whole chain on failure. Interpolation runs unconditionally; a placeholder that references missing history (e.g. `${{ body }}` with no previous response) or a missing env var aborts the chain with an error. Env-only presets (`${{ env.* }}`) work even with no prior response.
+
+   The shared execution path of `send`/`then` (execute → record history → `session.save()` → print → honour `fail`) lives in the `execute_and_record` helper in `cli/runner.rs`. The "body set but Content-Type missing" warning is also emitted there, not in the HTTP layer.
+   - `--dry-run` (GlobalFlag) — `send`/`then` print the request details (method, URL, headers, body) to stderr and skip the HTTP call, history recording, and their own `session.save()`. Mutations made by other commands (`method`, `url`, `header`, `load`, …) still occur and are persisted by the end-of-run save; a dry-run `then` interpolates the preset into `state.request` in memory but does not itself mark the session as modified
    - `fail` (GlobalFlag) — after all commands complete, exits with code 1 if any `send` or `then` received a 4xx or 5xx response
 4. If any mutation occurred without a following `send`/`then`, `session.save()` is called at end
 5. `show` and `response` (deferred during parsing) run after all commands, in that order
@@ -146,7 +148,7 @@ If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range in
 
 ### Argument parsing
 
-No external parser (no `clap`). `parse_args` is a hand-written `while` loop over `args` that returns `Vec<Command>`. This keeps the UX simple: `reel method GET url https://example.com send` reads naturally left-to-right.
+No external parser (no `clap`). `parse_args` is a hand-written loop over a small `Tokens` cursor (`next`/`value_for`/`rest`/`advance`) that returns `Vec<Command>`; `value_for` produces the uniform `'<cmd>' requires ...` errors. This keeps the UX simple: `reel method GET url https://example.com send` reads naturally left-to-right. The chained command-stream grammar fundamentally doesn't fit clap's one-subcommand-per-invocation model — this was re-evaluated and deliberately re-affirmed.
 
 `show` and `response` are deferred — `parse_args` records them in the `Command` stream and `run_commands` sets flags for them, running them after all other commands complete.
 
@@ -183,8 +185,8 @@ Tests live in per-module `tests.rs` files (`model/tests.rs`, `template/tests.rs`
 Likely next additions and where to put them. Implement only when explicitly requested.
 
 - **Named sessions** (`reel session <name>`) — symlink or alias over `save`/`load`
-- **Configurable timeout** (`reel timeout 30`) — currently hardcoded to 30 s; expose as a `State` field
-- **Query params** (`reel param key value`) — add `params: HashMap<String,String>` to `State`, pass to `.query()` on the request builder
+- **Configurable timeout** (`reel timeout 30`) — currently hardcoded to 30 s; expose as a `Request` field
+- **Query params** (`reel param key value`) — add `params: HashMap<String,String>` to `Request`, pass to `.query()` on the request builder
 - **Auth shorthand** (`reel auth bearer <token>`) — sugar over `header Authorization "Bearer <token>"`
 - **Verbose mode** — print full request details before sending; flag in `State` or a CLI-only bool
 - **Session list/switch** — list `~/.reel/sessions/`, let user pick by number or name
@@ -194,5 +196,5 @@ Likely next additions and where to put them. Implement only when explicitly requ
 - No async runtime. `reqwest::blocking` is deliberate — a CLI tool doesn't benefit from async.
 - No `clap`. The positional key-value syntax is the UX; a flag-based parser would break it.
 - Status on stderr, body on stdout. Do not change this — it enables `reel send | jq .`.
-- `session.save()` inside `Send`/`Then` command branches must come before any stdout write — broken-pipe safety.
+- `session.save()` inside the shared `send`/`then` execution path (`execute_and_record` in `cli/runner.rs`) must come before any stdout write — broken-pipe safety.
 - `parse_args` must stay pure (no I/O). All I/O belongs in `run_commands` via the injected traits.

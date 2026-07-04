@@ -2,14 +2,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-#[cfg(unix)]
-extern crate libc;
+use anyhow::Result;
 
-use crate::model::State;
+use crate::model::{Request, State};
 
 pub trait SessionStore {
     fn load(&self) -> State;
-    fn save(&self, state: &State);
+    fn save(&self, state: &State) -> Result<()>;
     fn delete(&self);
     fn path(&self) -> &Path;
 }
@@ -110,11 +109,24 @@ impl SessionStore for FileSessionStore {
         }
     }
 
-    fn save(&self, state: &State) {
-        fs::create_dir_all(self.path.parent().expect("session path has no parent"))
-            .expect("cannot create session directory");
-        let content = serde_json::to_string_pretty(state).unwrap();
-        fs::write(&self.path, content).expect("cannot write session file");
+    fn save(&self, state: &State) -> Result<()> {
+        if let Some(dir) = self.path.parent() {
+            fs::create_dir_all(dir).map_err(|e| {
+                anyhow::anyhow!(
+                    "error: cannot create session directory '{}': {}",
+                    dir.display(),
+                    e
+                )
+            })?;
+        }
+        let content = serde_json::to_string_pretty(state)?;
+        fs::write(&self.path, content).map_err(|e| {
+            anyhow::anyhow!(
+                "error: cannot write session file '{}': {}",
+                self.path.display(),
+                e
+            )
+        })
     }
 
     fn delete(&self) {
@@ -169,16 +181,14 @@ pub fn cleanup_old_sessions() {
     }
 }
 
-pub fn save_preset(state: &State, path: &Path) -> anyhow::Result<()> {
-    let mut to_save = state.clone();
-    to_save.requests.clear();
-    to_save.responses.clear();
-    let content = serde_json::to_string_pretty(&to_save).unwrap();
+// Presets store only the request fields — never the request/response history.
+pub fn save_preset(request: &Request, path: &Path) -> Result<()> {
+    let content = serde_json::to_string_pretty(request)?;
     fs::write(path, content)
         .map_err(|e| anyhow::anyhow!("error writing '{}': {}", path.display(), e))
 }
 
-pub fn load_preset(path: &Path) -> anyhow::Result<State> {
+pub fn load_preset(path: &Path) -> Result<State> {
     let content = fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("error reading '{}': {}", path.display(), e))?;
     serde_json::from_str(&content)

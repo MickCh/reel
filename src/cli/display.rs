@@ -1,78 +1,13 @@
-use crate::model::{ResponseRecord, State};
+use crate::http::status_reason;
+use crate::model::{Request, ResponseRecord, State};
 use crate::session::SessionStore;
 
 use super::commands::{ResponseTarget, ResponseView};
 
 pub(super) fn format_status(code: u16) -> String {
-    let reason = match code {
-        100 => "Continue",
-        101 => "Switching Protocols",
-        102 => "Processing",
-        103 => "Early Hints",
-        200 => "OK",
-        201 => "Created",
-        202 => "Accepted",
-        203 => "Non-Authoritative Information",
-        204 => "No Content",
-        205 => "Reset Content",
-        206 => "Partial Content",
-        207 => "Multi-Status",
-        208 => "Already Reported",
-        226 => "IM Used",
-        300 => "Multiple Choices",
-        301 => "Moved Permanently",
-        302 => "Found",
-        303 => "See Other",
-        304 => "Not Modified",
-        305 => "Use Proxy",
-        307 => "Temporary Redirect",
-        308 => "Permanent Redirect",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        402 => "Payment Required",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        406 => "Not Acceptable",
-        407 => "Proxy Authentication Required",
-        408 => "Request Timeout",
-        409 => "Conflict",
-        410 => "Gone",
-        411 => "Length Required",
-        412 => "Precondition Failed",
-        413 => "Content Too Large",
-        414 => "URI Too Long",
-        415 => "Unsupported Media Type",
-        416 => "Range Not Satisfiable",
-        417 => "Expectation Failed",
-        418 => "I'm a Teapot",
-        421 => "Misdirected Request",
-        422 => "Unprocessable Content",
-        423 => "Locked",
-        424 => "Failed Dependency",
-        425 => "Too Early",
-        426 => "Upgrade Required",
-        428 => "Precondition Required",
-        429 => "Too Many Requests",
-        431 => "Request Header Fields Too Large",
-        451 => "Unavailable For Legal Reasons",
-        500 => "Internal Server Error",
-        501 => "Not Implemented",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        505 => "HTTP Version Not Supported",
-        506 => "Variant Also Negotiates",
-        507 => "Insufficient Storage",
-        508 => "Loop Detected",
-        510 => "Not Extended",
-        511 => "Network Authentication Required",
-        _ => "",
-    };
-    if reason.is_empty() {
-        code.to_string()
-    } else {
-        format!("{} {}", code, reason)
+    match status_reason(code) {
+        Some(reason) => format!("{} {}", code, reason),
+        None => code.to_string(),
     }
 }
 
@@ -96,9 +31,7 @@ fn show_single(r: &ResponseRecord, view: &ResponseView) {
         ResponseView::Body => print!("{}", r.body),
         ResponseView::Headers => {
             println!("{} — {}", r.status, source_label(r));
-            let mut headers: Vec<_> = r.headers.iter().collect();
-            headers.sort_by_key(|(k, _)| k.as_str());
-            for (k, v) in headers {
+            for (k, v) in r.headers.sorted() {
                 println!("{}: {}", k, v);
             }
         }
@@ -115,15 +48,16 @@ pub fn show_state(state: &State, session: &dyn SessionStore) {
     eprintln!("Session: {}", session.path().display());
     eprintln!(
         "  method  {}",
-        state.method.as_deref().unwrap_or("(not set)")
+        state.request.method.as_deref().unwrap_or("(not set)")
     );
-    eprintln!("  url     {}", state.url.as_deref().unwrap_or("(not set)"));
-    let mut headers: Vec<_> = state.headers.iter().collect();
-    headers.sort_by_key(|(k, _)| k.as_str());
-    for (k, v) in headers {
+    eprintln!(
+        "  url     {}",
+        state.request.url.as_deref().unwrap_or("(not set)")
+    );
+    for (k, v) in state.request.headers.sorted() {
         eprintln!("  header  {}: {}", k, v);
     }
-    if let Some(body) = &state.body {
+    if let Some(body) = &state.request.body {
         let formatted = serde_json::from_str::<serde_json::Value>(body)
             .map(|v| serde_json::to_string_pretty(&v).unwrap())
             .unwrap_or_else(|_| body.clone());
@@ -173,9 +107,7 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
                 for (i, r) in state.responses.iter().enumerate() {
                     let label = source_label(r);
                     println!("[{}] {} — {}", i + 1, r.status, label);
-                    let mut headers: Vec<_> = r.headers.iter().collect();
-                    headers.sort_by_key(|(k, _)| k.as_str());
-                    for (k, v) in headers {
+                    for (k, v) in r.headers.sorted() {
                         println!("  {}: {}", k, v);
                     }
                 }
@@ -253,18 +185,16 @@ pub fn print_usage() {
     );
 }
 
-pub(super) fn print_dry_run(state: &State) {
+pub(super) fn print_dry_run(request: &Request) {
     eprintln!(
         "> {} {}",
-        state.method.as_deref().unwrap_or("GET"),
-        state.url.as_deref().unwrap_or("(not set)")
+        request.method.as_deref().unwrap_or("GET"),
+        request.url.as_deref().unwrap_or("(not set)")
     );
-    let mut headers: Vec<_> = state.headers.iter().collect();
-    headers.sort_by_key(|(k, _)| k.as_str());
-    for (k, v) in headers {
+    for (k, v) in request.headers.sorted() {
         eprintln!(">   {}: {}", k, v);
     }
-    if let Some(body) = &state.body {
+    if let Some(body) = &request.body {
         eprintln!(">   {}", body);
     }
 }

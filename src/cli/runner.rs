@@ -1,12 +1,47 @@
 use anyhow::{Result, bail};
 
 use crate::http::HttpClient;
-use crate::model::{RequestRecord, State};
+use crate::model::State;
 use crate::session::{SessionStore, load_preset, save_preset};
 use crate::template::{Context, apply_interpolation};
 
 use super::commands::{Command, GlobalFlags, ParseResult, ResponseTarget, ResponseView};
 use super::display::{format_status, print_dry_run};
+
+// Shared execution path of `send` and `then`: run the request, record it in
+// the history, persist the session, print the result, and honour `fail`.
+// `session.save()` must come before any stdout write — broken-pipe safety.
+fn execute_and_record(
+    state: &mut State,
+    flags: &GlobalFlags,
+    http: &dyn HttpClient,
+    session: &dyn SessionStore,
+    source: Option<&str>,
+    status_note: Option<&str>,
+) -> Result<()> {
+    if state.request.body.is_some() && state.request.headers.get("content-type").is_none() {
+        eprintln!("warning: body is set but Content-Type header is missing");
+    }
+
+    let record = http.execute(&state.request, source)?;
+    state.requests.push(state.request.clone());
+    state.responses.push(record);
+    session.save(state)?;
+
+    let last = state.responses.last().unwrap();
+    match status_note {
+        Some(note) => eprintln!("< {} ({})", format_status(last.status), note),
+        None => eprintln!("< {}", format_status(last.status)),
+    }
+    print!("{}", last.body);
+    if !last.body.ends_with('\n') {
+        println!();
+    }
+    if flags.fail_on_error && last.status >= 400 {
+        bail!("error: request failed with status {}", last.status);
+    }
+    Ok(())
+}
 
 pub fn run_commands(
     commands: Vec<Command>,
@@ -23,73 +58,40 @@ pub fn run_commands(
         match cmd {
             Command::Send => {
                 if flags.dry_run {
-                    print_dry_run(state);
+                    print_dry_run(&state.request);
                     continue;
                 }
                 let had_responses = !state.responses.is_empty();
-                state.responses.clear();
                 state.requests.clear();
-                let record = http.execute(state, None)?;
-                state.requests.push(RequestRecord::from_state(state));
-                state.responses.push(record);
-                session.save(state);
-                let last = state.responses.last().unwrap();
-                if had_responses {
-                    eprintln!(
-                        "< {} (previous responses cleared)",
-                        format_status(last.status)
-                    );
-                } else {
-                    eprintln!("< {}", format_status(last.status));
-                }
-                print!("{}", last.body);
-                if !last.body.ends_with('\n') {
-                    println!();
-                }
-                if flags.fail_on_error && last.status >= 400 {
-                    bail!("error: request failed with status {}", last.status);
-                }
+                state.responses.clear();
+                let note = had_responses.then_some("previous responses cleared");
+                execute_and_record(state, flags, http, session, None, note)?;
                 modified = false;
             }
             Command::Then(path) => {
                 let path_str = path.to_string_lossy().into_owned();
-                let prev_requests = state.requests.clone();
-                let prev_responses = state.responses.clone();
 
-                let mut loaded = load_preset(&path)?;
-                loaded.requests = prev_requests.clone();
-                loaded.responses = prev_responses.clone();
-                *state = loaded;
+                // Replace the current request from the preset; the history
+                // stays in place so templates can reference it.
+                state.request = load_preset(&path)?.request;
 
                 // Interpolate against the prior request/response history and the
                 // environment. Placeholders referencing missing history (or a
                 // missing env var) abort the chain here.
                 let ctx = Context {
-                    requests: &prev_requests,
-                    responses: &prev_responses,
+                    requests: &state.requests,
+                    responses: &state.responses,
                 };
-                apply_interpolation(state, &ctx)
+                apply_interpolation(&mut state.request, &ctx)
                     .map_err(|e| anyhow::anyhow!("error in '{}': {}", path_str, e))?;
 
                 if flags.dry_run {
                     eprintln!("(dry-run: {})", path_str);
-                    print_dry_run(state);
+                    print_dry_run(&state.request);
                     continue;
                 }
 
-                let record = http.execute(state, Some(&path_str))?;
-                state.requests.push(RequestRecord::from_state(state));
-                state.responses.push(record);
-                session.save(state);
-                let last = state.responses.last().unwrap();
-                eprintln!("< {}", format_status(last.status));
-                print!("{}", last.body);
-                if !last.body.ends_with('\n') {
-                    println!();
-                }
-                if flags.fail_on_error && last.status >= 400 {
-                    bail!("error: request failed with status {}", last.status);
-                }
+                execute_and_record(state, flags, http, session, Some(&path_str), None)?;
                 modified = false;
             }
             Command::Show => {
@@ -105,55 +107,38 @@ pub fn run_commands(
                 eprintln!("Session cleared.");
             }
             Command::Method(m) => {
-                state.method = Some(m);
+                state.request.method = Some(m);
                 modified = true;
             }
             Command::Url(u) => {
                 if u.is_empty() {
                     bail!("error: URL cannot be empty");
                 }
-                state.url = Some(u);
+                state.request.url = Some(u);
                 modified = true;
             }
             Command::Header(key, val) => {
-                // Case-insensitive dedup: remove existing key with the same name before inserting.
-                let existing = state
-                    .headers
-                    .keys()
-                    .find(|k| k.to_lowercase() == key.to_lowercase())
-                    .cloned();
-                if let Some(old) = existing {
-                    state.headers.remove(&old);
-                }
-                state.headers.insert(key, val);
+                state.request.headers.insert(key, val);
                 modified = true;
             }
             Command::HeaderRm(key) => {
-                // Case-insensitive: scan for a matching key regardless of casing in stored state.
-                let found = state
-                    .headers
-                    .keys()
-                    .find(|k| k.to_lowercase() == key)
-                    .cloned();
-                if let Some(k) = found {
-                    state.headers.remove(&k);
+                if state.request.headers.remove(&key) {
                     modified = true;
                 } else {
                     eprintln!("warning: header '{}' not found", key);
                 }
             }
             Command::HeaderRmAll => {
-                state.headers.clear();
+                state.request.headers.clear();
                 modified = true;
             }
             Command::Body(b) => {
-                state.body = Some(b);
+                state.request.body = Some(b);
                 modified = true;
             }
             Command::Save(path) => {
-                if save_preset(state, &path).is_ok() {
-                    eprintln!("Request saved to: {}", path.display());
-                }
+                save_preset(&state.request, &path)?;
+                eprintln!("Request saved to: {}", path.display());
             }
             Command::Load(path) => {
                 *state = load_preset(&path)?;
@@ -164,7 +149,7 @@ pub fn run_commands(
     }
 
     if modified {
-        session.save(state);
+        session.save(state)?;
     }
 
     Ok(ParseResult {

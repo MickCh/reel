@@ -24,8 +24,8 @@ fn temp_store() -> (FileSessionStore, PathBuf) {
 fn load_missing_returns_default() {
     let (store, dir) = temp_store();
     let state = store.load();
-    assert!(state.method.is_none());
-    assert!(state.url.is_none());
+    assert!(state.request.method.is_none());
+    assert!(state.request.url.is_none());
     fs::remove_dir_all(dir).ok();
 }
 
@@ -33,20 +33,20 @@ fn load_missing_returns_default() {
 fn save_and_load_round_trip() {
     let (store, dir) = temp_store();
     let mut state = State::default();
-    state.method = Some("POST".to_string());
-    state.url = Some("https://example.com".to_string());
-    store.save(&state);
+    state.request.method = Some("POST".to_string());
+    state.request.url = Some("https://example.com".to_string());
+    store.save(&state).unwrap();
 
     let loaded = store.load();
-    assert_eq!(loaded.method, Some("POST".to_string()));
-    assert_eq!(loaded.url, Some("https://example.com".to_string()));
+    assert_eq!(loaded.request.method, Some("POST".to_string()));
+    assert_eq!(loaded.request.url, Some("https://example.com".to_string()));
     fs::remove_dir_all(dir).ok();
 }
 
 #[test]
 fn delete_removes_file() {
     let (store, dir) = temp_store();
-    store.save(&State::default());
+    store.save(&State::default()).unwrap();
     assert!(store.path.exists());
     store.delete();
     assert!(!store.path.exists());
@@ -65,18 +65,18 @@ fn corrupted_file_falls_back_to_default() {
     let (store, dir) = temp_store();
     fs::write(&store.path, "not valid json").unwrap();
     let state = store.load();
-    assert!(state.method.is_none());
+    assert!(state.request.method.is_none());
     fs::remove_dir_all(dir).ok();
 }
 
 #[test]
-fn save_preset_strips_responses() {
+fn save_preset_stores_only_request_fields() {
     let dir = std::env::temp_dir().join(format!("reel_preset_{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("preset.json");
 
     let mut state = State::default();
-    state.url = Some("https://example.com".to_string());
+    state.request.url = Some("https://example.com".to_string());
     state.responses.push(crate::model::ResponseRecord {
         source: None,
         status: 200,
@@ -84,9 +84,9 @@ fn save_preset_strips_responses() {
         body: "body".to_string(),
     });
 
-    save_preset(&state, &path).unwrap();
+    save_preset(&state.request, &path).unwrap();
     let loaded = load_preset(&path).unwrap();
     assert!(loaded.responses.is_empty());
-    assert_eq!(loaded.url, Some("https://example.com".to_string()));
+    assert_eq!(loaded.request.url, Some("https://example.com".to_string()));
     fs::remove_dir_all(dir).ok();
 }

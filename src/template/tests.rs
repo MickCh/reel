@@ -1,6 +1,4 @@
 use super::*;
-use crate::model::RequestRecord;
-use std::collections::HashMap;
 
 fn record(status: u16, body: &str, headers: &[(&str, &str)]) -> ResponseRecord {
     ResponseRecord {
@@ -14,8 +12,8 @@ fn record(status: u16, body: &str, headers: &[(&str, &str)]) -> ResponseRecord {
     }
 }
 
-fn request(method: &str, url: &str, body: Option<&str>, headers: &[(&str, &str)]) -> RequestRecord {
-    RequestRecord {
+fn request(method: &str, url: &str, body: Option<&str>, headers: &[(&str, &str)]) -> Request {
+    Request {
         method: Some(method.to_string()),
         url: Some(url.to_string()),
         headers: headers
@@ -130,21 +128,23 @@ fn multiple_placeholders() {
 #[test]
 fn apply_interpolation_replaces_url_and_headers() {
     let r = record(200, r#"{"tok":"xyz"}"#, &[]);
-    let mut state = State {
+    let mut request = Request {
         url: Some("https://example.com/${{ body.tok }}".to_string()),
-        headers: HashMap::from([("X-Token".to_string(), "${{ body.tok }}".to_string())]),
+        headers: [("X-Token".to_string(), "${{ body.tok }}".to_string())]
+            .into_iter()
+            .collect(),
         ..Default::default()
     };
     apply_interpolation(
-        &mut state,
+        &mut request,
         &Context {
             requests: &[],
             responses: &[r],
         },
     )
     .unwrap();
-    assert_eq!(state.url.unwrap(), "https://example.com/xyz");
-    assert_eq!(state.headers["X-Token"], "xyz");
+    assert_eq!(request.url.unwrap(), "https://example.com/xyz");
+    assert_eq!(request.headers.get("X-Token"), Some("xyz"));
 }
 
 // --- indexed response[N] syntax ---
@@ -226,11 +226,7 @@ fn mix_indexed_and_implicit() {
 
 // --- environment variables ---
 
-fn interp_full(
-    text: &str,
-    requests: &[RequestRecord],
-    responses: &[ResponseRecord],
-) -> Result<String> {
+fn interp_full(text: &str, requests: &[Request], responses: &[ResponseRecord]) -> Result<String> {
     interpolate(
         text,
         &Context {

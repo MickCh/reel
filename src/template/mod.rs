@@ -1,13 +1,13 @@
 use anyhow::{Result, bail};
 
-use crate::model::{RequestRecord, ResponseRecord, State};
+use crate::model::{Request, ResponseRecord};
 
 // The data a template can interpolate against: the request/response history of
 // the current session. Bare `body`/`status`/`headers.*` refer to the last
 // response; `request.*`/`request[N].*` reach the captured requests; `env.*`
 // reads process environment variables (independent of history).
 pub struct Context<'a> {
-    pub requests: &'a [RequestRecord],
+    pub requests: &'a [Request],
     pub responses: &'a [ResponseRecord],
 }
 
@@ -45,12 +45,12 @@ fn eval_record_expr(expr: &str, record: &ResponseRecord) -> Result<String> {
     if expr == "body" {
         return Ok(record.body.clone());
     }
-    if let Some(path) = expr.strip_prefix("headers.") {
+    if let Some(name) = expr.strip_prefix("headers.") {
         return record
             .headers
-            .get(path)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("header '{}' not found in response", path));
+            .get(name)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("header '{}' not found in response", name));
     }
     if let Some(path) = expr.strip_prefix("body.") {
         let json: serde_json::Value = serde_json::from_str(&record.body)
@@ -69,7 +69,7 @@ fn eval_record_expr(expr: &str, record: &ResponseRecord) -> Result<String> {
 //   body                → raw request body
 //   body.<path>         → dot-path into the JSON request body
 //   headers.<name>      → request header value (case-insensitive lookup)
-fn eval_request_expr(expr: &str, record: &RequestRecord) -> Result<String> {
+fn eval_request_expr(expr: &str, record: &Request) -> Result<String> {
     match expr {
         "method" => record
             .method
@@ -87,9 +87,8 @@ fn eval_request_expr(expr: &str, record: &RequestRecord) -> Result<String> {
             if let Some(name) = expr.strip_prefix("headers.") {
                 return record
                     .headers
-                    .iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case(name))
-                    .map(|(_, v)| v.clone())
+                    .get(name)
+                    .map(str::to_string)
                     .ok_or_else(|| anyhow::anyhow!("header '{}' not found in request", name));
             }
             if let Some(path) = expr.strip_prefix("body.") {
@@ -223,18 +222,16 @@ pub fn interpolate(text: &str, ctx: &Context) -> Result<String> {
     Ok(result)
 }
 
-// Apply interpolation to all string fields of state (url, body, header values).
-pub fn apply_interpolation(state: &mut State, ctx: &Context) -> Result<()> {
-    if let Some(url) = state.url.take() {
-        state.url = Some(interpolate(&url, ctx)?);
+// Apply interpolation to all string fields of the request (url, body, header values).
+pub fn apply_interpolation(request: &mut Request, ctx: &Context) -> Result<()> {
+    if let Some(url) = request.url.take() {
+        request.url = Some(interpolate(&url, ctx)?);
     }
-    if let Some(body) = state.body.take() {
-        state.body = Some(interpolate(&body, ctx)?);
+    if let Some(body) = request.body.take() {
+        request.body = Some(interpolate(&body, ctx)?);
     }
-    let keys: Vec<String> = state.headers.keys().cloned().collect();
-    for key in keys {
-        let val = state.headers[&key].clone();
-        state.headers.insert(key, interpolate(&val, ctx)?);
+    for value in request.headers.values_mut() {
+        *value = interpolate(value, ctx)?;
     }
     Ok(())
 }

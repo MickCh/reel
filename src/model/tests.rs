@@ -1,30 +1,84 @@
 use super::*;
 
+// --- Headers ---
+
+#[test]
+fn headers_get_is_case_insensitive() {
+    let mut h = Headers::default();
+    h.insert("Content-Type".to_string(), "application/json".to_string());
+    assert_eq!(h.get("content-type"), Some("application/json"));
+    assert_eq!(h.get("CONTENT-TYPE"), Some("application/json"));
+    assert_eq!(h.get("x-missing"), None);
+}
+
+#[test]
+fn headers_insert_dedups_case_insensitively() {
+    let mut h = Headers::default();
+    h.insert("X-Token".to_string(), "old".to_string());
+    h.insert("x-token".to_string(), "new".to_string());
+    assert_eq!(h.iter().count(), 1);
+    // The most recent casing wins.
+    assert_eq!(h.sorted()[0].0, "x-token");
+    assert_eq!(h.get("X-Token"), Some("new"));
+}
+
+#[test]
+fn headers_remove_is_case_insensitive() {
+    let mut h = Headers::default();
+    h.insert("X-Foo".to_string(), "bar".to_string());
+    assert!(h.remove("x-foo"));
+    assert!(h.is_empty());
+    assert!(!h.remove("x-foo"));
+}
+
+#[test]
+fn headers_sorted_orders_by_name() {
+    let mut h = Headers::default();
+    h.insert("b".to_string(), "2".to_string());
+    h.insert("a".to_string(), "1".to_string());
+    let names: Vec<&str> = h.sorted().into_iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(names, ["a", "b"]);
+}
+
+// --- State ---
+
 #[test]
 fn state_default_is_empty() {
     let s = State::default();
-    assert!(s.method.is_none());
-    assert!(s.url.is_none());
-    assert!(s.headers.is_empty());
-    assert!(s.body.is_none());
+    assert!(s.request.method.is_none());
+    assert!(s.request.url.is_none());
+    assert!(s.request.headers.is_empty());
+    assert!(s.request.body.is_none());
     assert!(s.responses.is_empty());
 }
 
 #[test]
 fn state_round_trips_through_json() {
     let mut s = State::default();
-    s.method = Some("POST".to_string());
-    s.url = Some("https://example.com".to_string());
-    s.headers.insert("X-Foo".to_string(), "bar".to_string());
-    s.body = Some(r#"{"key":"val"}"#.to_string());
+    s.request.method = Some("POST".to_string());
+    s.request.url = Some("https://example.com".to_string());
+    s.request
+        .headers
+        .insert("X-Foo".to_string(), "bar".to_string());
+    s.request.body = Some(r#"{"key":"val"}"#.to_string());
 
     let json = serde_json::to_string(&s).unwrap();
     let restored: State = serde_json::from_str(&json).unwrap();
-    assert_eq!(restored.method, s.method);
-    assert_eq!(restored.url, s.url);
-    assert_eq!(restored.headers["X-Foo"], "bar");
-    assert_eq!(restored.body, s.body);
+    assert_eq!(restored.request.method, s.request.method);
+    assert_eq!(restored.request.url, s.request.url);
+    assert_eq!(restored.request.headers.get("X-Foo"), Some("bar"));
+    assert_eq!(restored.request.body, s.request.body);
     assert!(restored.responses.is_empty());
+}
+
+#[test]
+fn state_serializes_request_fields_flat() {
+    let mut s = State::default();
+    s.request.method = Some("GET".to_string());
+    let json = serde_json::to_string(&s).unwrap();
+    // The current request is flattened — no nested "request" object.
+    assert!(json.contains(r#""method":"GET""#));
+    assert!(!json.contains(r#""request""#));
 }
 
 #[test]
@@ -32,7 +86,7 @@ fn state_deserializes_native_json_object_body() {
     let json = r#"{"url":"https://x.com","body":{"field":"value","nested":{"n":1}}}"#;
     let s: State = serde_json::from_str(json).unwrap();
     assert_eq!(
-        s.body.as_deref(),
+        s.request.body.as_deref(),
         Some(r#"{"field":"value","nested":{"n":1}}"#)
     );
 }
@@ -41,27 +95,27 @@ fn state_deserializes_native_json_object_body() {
 fn state_deserializes_native_json_array_body() {
     let json = r#"{"url":"https://x.com","body":[1,2,3]}"#;
     let s: State = serde_json::from_str(json).unwrap();
-    assert_eq!(s.body.as_deref(), Some("[1,2,3]"));
+    assert_eq!(s.request.body.as_deref(), Some("[1,2,3]"));
 }
 
 #[test]
 fn state_deserializes_plain_string_body() {
     let json = r#"{"url":"https://x.com","body":"hello world"}"#;
     let s: State = serde_json::from_str(json).unwrap();
-    assert_eq!(s.body.as_deref(), Some("hello world"));
+    assert_eq!(s.request.body.as_deref(), Some("hello world"));
 }
 
 #[test]
 fn state_deserializes_escaped_json_string_body() {
     let json = r#"{"url":"https://x.com","body":"{\"field\":\"value\"}"}"#;
     let s: State = serde_json::from_str(json).unwrap();
-    assert_eq!(s.body.as_deref(), Some(r#"{"field":"value"}"#));
+    assert_eq!(s.request.body.as_deref(), Some(r#"{"field":"value"}"#));
 }
 
 #[test]
 fn state_serializes_json_body_as_native_object() {
     let mut s = State::default();
-    s.body = Some(r#"{"key":"val"}"#.to_string());
+    s.request.body = Some(r#"{"key":"val"}"#.to_string());
     let json = serde_json::to_string(&s).unwrap();
     assert!(json.contains(r#""body":{"key":"val"}"#));
 }
@@ -69,7 +123,7 @@ fn state_serializes_json_body_as_native_object() {
 #[test]
 fn state_serializes_non_json_body_as_string() {
     let mut s = State::default();
-    s.body = Some("plain text".to_string());
+    s.request.body = Some("plain text".to_string());
     let json = serde_json::to_string(&s).unwrap();
     assert!(json.contains(r#""body":"plain text""#));
 }
@@ -77,7 +131,7 @@ fn state_serializes_non_json_body_as_string() {
 #[test]
 fn state_serializes_json_array_body_as_native_array() {
     let mut s = State::default();
-    s.body = Some("[1,2,3]".to_string());
+    s.request.body = Some("[1,2,3]".to_string());
     let json = serde_json::to_string(&s).unwrap();
     assert!(json.contains(r#""body":[1,2,3]"#));
 }
@@ -93,7 +147,7 @@ fn state_omitted_responses_deserializes_as_empty() {
 fn state_omitted_headers_deserializes_as_empty() {
     let json = r#"{"method":"GET","url":"https://x.com"}"#;
     let s: State = serde_json::from_str(json).unwrap();
-    assert!(s.headers.is_empty());
+    assert!(s.request.headers.is_empty());
 }
 
 #[test]
@@ -103,9 +157,11 @@ fn state_old_last_field_is_ignored() {
     assert!(s.responses.is_empty());
 }
 
+// --- ResponseRecord ---
+
 #[test]
 fn response_record_round_trips() {
-    let mut headers = HashMap::new();
+    let mut headers = Headers::default();
     headers.insert("content-type".to_string(), "application/json".to_string());
     let r = ResponseRecord {
         source: Some("login.json".to_string()),
@@ -118,7 +174,10 @@ fn response_record_round_trips() {
     assert_eq!(restored.status, 200);
     assert_eq!(restored.body, "ok");
     assert_eq!(restored.source.as_deref(), Some("login.json"));
-    assert_eq!(restored.headers["content-type"], "application/json");
+    assert_eq!(
+        restored.headers.get("content-type"),
+        Some("application/json")
+    );
 }
 
 #[test]
@@ -126,7 +185,7 @@ fn response_record_without_source_omits_field() {
     let r = ResponseRecord {
         source: None,
         status: 404,
-        headers: HashMap::new(),
+        headers: Headers::default(),
         body: "not found".to_string(),
     };
     let json = serde_json::to_string(&r).unwrap();

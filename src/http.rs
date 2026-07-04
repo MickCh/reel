@@ -3,10 +3,17 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::model::{ResponseRecord, State};
+use crate::model::{Request, ResponseRecord};
 
 pub trait HttpClient {
-    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord>;
+    fn execute(&self, request: &Request, source: Option<&str>) -> Result<ResponseRecord>;
+}
+
+// Canonical reason phrase for an HTTP status code (e.g. 200 → "OK").
+pub fn status_reason(code: u16) -> Option<&'static str> {
+    reqwest::StatusCode::from_u16(code)
+        .ok()
+        .and_then(|s| s.canonical_reason())
 }
 
 pub struct ReqwestClient {
@@ -26,48 +33,25 @@ impl ReqwestClient {
 }
 
 impl HttpClient for ReqwestClient {
-    fn execute(&self, state: &State, source: Option<&str>) -> Result<ResponseRecord> {
-        let url = match &state.url {
+    fn execute(&self, request: &Request, source: Option<&str>) -> Result<ResponseRecord> {
+        let url = match &request.url {
             Some(u) => u.clone(),
             None => anyhow::bail!("error: URL not set (use: reel url <URL>)"),
         };
 
-        let method = state.method.as_deref().unwrap_or("GET").to_uppercase();
+        let method_name = request.method.as_deref().unwrap_or("GET").to_uppercase();
+        let method = reqwest::Method::from_bytes(method_name.as_bytes())
+            .map_err(|_| anyhow::anyhow!("error: invalid HTTP method '{}'", method_name))?;
 
-        let req_builder = match method.as_str() {
-            "GET" => self.client.get(&url),
-            "POST" => self.client.post(&url),
-            "PUT" => self.client.put(&url),
-            "PATCH" => self.client.patch(&url),
-            "DELETE" => self.client.delete(&url),
-            "HEAD" => self.client.head(&url),
-            "OPTIONS" => self.client.request(reqwest::Method::OPTIONS, &url),
-            other => match reqwest::Method::from_bytes(other.as_bytes()) {
-                Ok(m) => self.client.request(m, &url),
-                Err(_) => anyhow::bail!("error: invalid HTTP method '{}'", other),
-            },
-        };
-
-        let req_builder = state
-            .headers
-            .iter()
-            .fold(req_builder, |b, (k, v)| b.header(k, v));
-
-        let req_builder = match &state.body {
-            Some(b) => req_builder.body(b.clone()),
-            None => req_builder,
-        };
-
-        if state.body.is_some()
-            && !state
-                .headers
-                .keys()
-                .any(|k| k.eq_ignore_ascii_case("content-type"))
-        {
-            eprintln!("warning: body is set but Content-Type header is missing");
+        let mut builder = self.client.request(method, &url);
+        for (k, v) in request.headers.iter() {
+            builder = builder.header(k, v);
+        }
+        if let Some(body) = &request.body {
+            builder = builder.body(body.clone());
         }
 
-        let resp = req_builder.send().map_err(|e| {
+        let resp = builder.send().map_err(|e| {
             if e.is_builder() && !url.starts_with("http://") && !url.starts_with("https://") {
                 anyhow::anyhow!("error: invalid URL '{}' — did you forget https://?", url)
             } else {
@@ -97,7 +81,7 @@ impl HttpClient for ReqwestClient {
         Ok(ResponseRecord {
             source: source.map(|s| s.to_string()),
             status: status.as_u16(),
-            headers: resp_headers,
+            headers: resp_headers.into(),
             body,
         })
     }
