@@ -22,6 +22,19 @@ Each terminal window runs its own shell process. `reel` uses the parent shell's 
 - Different terminal windows have **independent sessions**
 - A session disappears naturally when the shell exits
 
+Session files record the shell's start time alongside its PID, so a session is never accidentally inherited by an unrelated process that later receives the same PID. Sessions whose shell has exited are cleaned up automatically on the next `reel` invocation; a session belonging to a running shell is never removed, no matter how old (long-lived `tmux`/`screen` shells are safe).
+
+### Named sessions (`REEL_SESSION`)
+
+Setting the `REEL_SESSION` environment variable overrides the PID-based key with a name of your choice (1–64 characters from `A-Za-z0-9._-`):
+
+```bash
+export REEL_SESSION=deploy   # every reel call in this shell now shares session "deploy"
+REEL_SESSION=ci reel send    # one-off: use session "ci" for a single invocation
+```
+
+This is useful in scripts, CI, or anywhere the parent-PID heuristic doesn't fit — a script normally gets its own session because its interpreter is the parent process, but with `REEL_SESSION` it can share one with the invoking shell or with other scripts. Named sessions are stored as `~/.reel/sessions/named-<name>.json` and are removed automatically after 7 days without use.
+
 ## Platform support
 
 | Platform | Session isolation |
@@ -321,9 +334,9 @@ Sessions are stored as plain JSON and can be edited or version-controlled:
 }
 ```
 
-The `responses` array is written automatically after each `send` and can be omitted when creating preset files — it will be populated on first use.
+The `responses` array is written automatically after each `send` and can be omitted when creating preset files — it will be populated on first use. PID-keyed session files also carry an `owner_start_time` field identifying the owning shell; it is ignored in preset files.
 
-> **Note:** Session files and preset files store credentials (e.g. `Authorization` headers) in plaintext. Avoid committing preset files that contain real tokens to version control.
+> **Note:** Session files and preset files store credentials (e.g. `Authorization` headers) in plaintext (session files are created with `0600` permissions on Unix). Avoid committing preset files that contain real tokens to version control.
 
 ## Dependencies
 

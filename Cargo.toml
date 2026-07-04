@@ -23,11 +23,13 @@ serde_json = "1"
 reqwest = { version = "0.13", features = ["blocking"] }
 dirs = "6"
 
-# libc is used for PPID lookup via getppid() on Unix (Linux, macOS, BSD).
+# libc is used for PPID lookup via getppid() and process liveness via
+# kill(pid, 0) on Unix (Linux, macOS, BSD).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# windows-sys is used for PPID lookup via CreateToolhelp32Snapshot.
+# windows-sys is used for PPID lookup via CreateToolhelp32Snapshot and for
+# process start time / liveness via OpenProcess + GetProcessTimes.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

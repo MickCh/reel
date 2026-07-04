@@ -46,11 +46,14 @@ pub trait SessionStore {
 }
 ```
 
-`main.rs` constructs the concrete implementations (`ReqwestClient`, `FileSessionStore`) and passes them in.
+`main.rs` constructs the concrete implementations (`ReqwestClient`, `FileSessionStore`) and passes them in. `FileSessionStore::new()` returns `Result` — it fails (graceful stderr + exit 1, no panic) only when the home directory cannot be determined.
 
 ### Session identification
 
-Uses the parent shell PID as the session key. State is stored in `~/.reel/sessions/<ppid>.json`. The PPID is read once via `OnceLock<u32>` and cached for the process lifetime.
+The session key is, in order of precedence:
+
+1. **`REEL_SESSION` env var** — a named session, stored as `~/.reel/sessions/named-<name>.json`. Valid names are 1–64 chars from `[A-Za-z0-9._-]`; an invalid value prints a warning and falls back to the PPID. The `named-` prefix guarantees named files never collide with PID files.
+2. **Parent shell PID** — stored as `~/.reel/sessions/<ppid>.json`. The PPID is read once via `OnceLock<u32>` and cached for the process lifetime.
 
 Platform-specific PPID lookup is gated with `#[cfg(...)]` inside `get_ppid()` in `session/mod.rs`:
 
@@ -60,9 +63,13 @@ Platform-specific PPID lookup is gated with `#[cfg(...)]` inside `get_ppid()` in
 | Windows | `CreateToolhelp32Snapshot` + `Process32FirstW` from `windows-sys` |
 | other | Falls back to `0` with a warning (all invocations share one session) |
 
-The `SessionStore` trait itself is platform-neutral; only the internal `get_ppid()` helper is gated.
+The `SessionStore` trait itself is platform-neutral; only the internal helpers (`get_ppid()`, `process_start_time()`, `process_alive()`) are gated.
 
-`cleanup_old_sessions()` is called from `main.rs` at startup (before `session.load()`). It scans `~/.reel/sessions/` and removes any `.json` files whose last-modified time is older than 7 days. Silent no-op if the directory does not exist yet.
+**PID-reuse protection (ownership stamp).** PID-keyed session files carry an `owner_start_time` field: the parent process's start time (Linux: field 22 of `/proc/<pid>/stat`; Windows: `GetProcessTimes` creation `FILETIME`; other platforms: absent). On `load`, a stamp that differs from the current parent's start time means the PID was recycled by a new shell — the file is deleted and the session starts fresh, silently. The check is skipped when either side is unknown (named sessions, unstamped files from older versions, platforms without start times). The stamp lives in the `SessionFile`/`SessionFileRef` wrapper structs in `session/mod.rs`, **not** in `State` — the data model stays free of persistence metadata, and presets are unaffected (unknown fields are ignored on deserialization).
+
+**Atomic, private writes.** `save` serializes to `<path>.<pid>.tmp` and renames over the target, so an interrupted save can never corrupt the session file. On Unix the temp file is created with mode `0600` and the sessions directory with `0700` (session files can contain credentials); on Windows, default ACLs apply.
+
+**Cleanup.** `cleanup_old_sessions()` is called from `main.rs` at startup (before `session.load()`). For each `<pid>.json` file it checks whether the owning process is still alive (Unix: `kill(pid, 0)`, treating `EPERM` as alive; Windows: `OpenProcess` + `GetExitCodeProcess == STILL_ACTIVE`, treating `ERROR_ACCESS_DENIED` as alive): dead → removed immediately, alive → kept regardless of age (a week-idle tmux shell keeps its session). Files whose owner cannot be verified — `named-*.json`, the `0.json` fallback, platforms without a liveness check — and leftover `*.tmp` files fall back to the age rule: removed when last modified more than 7 days ago (`MAX_UNVERIFIED_AGE`). Silent no-op if the directory does not exist yet.
 
 ### Data model
 
@@ -95,7 +102,7 @@ All case-insensitive header semantics (lookup, insert dedup, removal) live in `H
 
 ### State lifecycle
 
-1. `FileSessionStore::new()` computes the session path (PPID-based); `session.load()` reads it (or returns `State::default()`)
+1. `FileSessionStore::new()` computes the session path (`REEL_SESSION` name or PPID) and, for PID-keyed sessions, the parent's start time; `session.load()` reads the file (or returns `State::default()`; a stale ownership stamp also yields a fresh default)
 2. `parse_args` processes all CLI arguments left-to-right and returns `(Vec<Command>, GlobalFlags)`; no I/O here
 3. `run_commands` executes commands in order, mutating `state`:
    - `load <PATH>` — replaces `state` wholesale from a JSON file
@@ -165,8 +172,8 @@ The `response` command peeks at the next token(s) to consume an optional `all`/i
 | `reqwest` (blocking) | HTTP client; blocking avoids async complexity for a CLI |
 | `serde` + `serde_json` | State serialization |
 | `dirs` | Cross-platform home directory |
-| `libc` (Unix only) | PPID lookup via `getppid()` on Linux, macOS, BSD |
-| `windows-sys` (Windows only) | PPID lookup via `CreateToolhelp32Snapshot` |
+| `libc` (Unix only) | PPID lookup via `getppid()`; process liveness via `kill(pid, 0)` |
+| `windows-sys` (Windows only) | PPID lookup via `CreateToolhelp32Snapshot`; process start time / liveness via `OpenProcess`, `GetProcessTimes`, `GetExitCodeProcess` |
 
 ## Build & test
 

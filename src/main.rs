@@ -22,7 +22,13 @@ fn main() {
     }
 
     session::cleanup_old_sessions();
-    let session = session::FileSessionStore::new();
+    let session = match session::FileSessionStore::new() {
+        Ok(session) => session,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
     let mut state = session.load();
 
     let (commands, flags) = match cli::parse_args(&args) {
