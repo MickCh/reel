@@ -40,8 +40,9 @@ fn main() {
     };
 
     let http = http::ReqwestClient::new(flags.insecure);
+    let presets = session::FilePresetStore;
 
-    match cli::run_commands(commands, &flags, &mut state, &http, &session) {
+    match cli::run_commands(commands, &flags, &mut state, &http, &session, &presets) {
         Ok(result) => {
             if result.do_show {
                 cli::show_state(&state, &session);

@@ -11,8 +11,8 @@ Modules under `src/`:
 | File | Responsibility |
 |---|---|
 | `main.rs` | Entry point — wires modules together |
-| `model/mod.rs` | `Headers`, `Request`, `ResponseRecord`, `State` structs (pure data, no I/O) |
-| `session/mod.rs` | `SessionStore` trait + `FileSessionStore` impl; `load_preset`/`save_preset`/`cleanup_old_sessions` free functions |
+| `model/mod.rs` | `Headers`, `Request`, `ResponseRecord`, `State` structs (pure data, no I/O); `status_reason` lookup table |
+| `session/mod.rs` | `SessionStore` + `PresetStore` traits with `FileSessionStore`/`FilePresetStore` impls; `cleanup_old_sessions` free function |
 | `template/mod.rs` | Template interpolation engine (`${{ expr }}`) |
 | `http.rs` | `HttpClient` trait + `ReqwestClient` impl |
 | `cli/mod.rs` | Re-exports public API of the `cli` submodules |
@@ -27,7 +27,7 @@ Dependency direction: `cli` → `http`/`template`/`session` → `model`. No modu
 
 ### Key traits
 
-**`http::HttpClient`** — abstracts HTTP execution. `run_commands` receives `&dyn HttpClient`, making it testable without real network calls. It takes only the `Request` — the HTTP layer never sees session history. `http.rs` also exposes `status_reason(code)` (a thin wrapper over `reqwest::StatusCode::canonical_reason`), used by `cli/display.rs` to format status lines.
+**`http::HttpClient`** — abstracts HTTP execution. `run_commands` receives `&dyn HttpClient`, making it testable without real network calls. It takes only the `Request` — the HTTP layer never sees session history. (`status_reason(code)`, used by `cli/display.rs` to format status lines, is a pure lookup table in `model` — the display layer does not depend on the HTTP module.)
 
 ```rust
 pub trait HttpClient {
@@ -46,7 +46,16 @@ pub trait SessionStore {
 }
 ```
 
-`main.rs` constructs the concrete implementations (`ReqwestClient`, `FileSessionStore`) and passes them in. `FileSessionStore::new()` returns `Result` — it fails (graceful stderr + exit 1, no panic) only when the home directory cannot be determined.
+**`session::PresetStore`** — abstracts preset-file access (`load`/`save`/`then`). Separate from `SessionStore` because presets live at caller-given paths while sessions live at keyed paths the store owns. `run_commands` receives `&dyn PresetStore`, so the preset command paths are testable without disk I/O.
+
+```rust
+pub trait PresetStore {
+    fn load(&self, path: &Path) -> Result<State>;
+    fn save(&self, request: &Request, path: &Path) -> Result<()>;
+}
+```
+
+`main.rs` constructs the concrete implementations (`ReqwestClient`, `FileSessionStore`, `FilePresetStore`) and passes them in. `FileSessionStore::new()` returns `Result` — it fails (graceful stderr + exit 1, no panic) only when the home directory cannot be determined.
 
 ### Session identification
 
@@ -185,7 +194,7 @@ cargo clippy             # linter (should produce no warnings)
 cargo test               # unit tests for model and template modules
 ```
 
-Tests live in per-module `tests.rs` files (`model/tests.rs`, `template/tests.rs`, `session/tests.rs`, `cli/tests.rs`). `cli/tests.rs` contains `MockHttp` and `MockSession` test doubles injected via `run_commands` — there are no integration tests with real network calls.
+Tests live in per-module `tests.rs` files (`model/tests.rs`, `template/tests.rs`, `session/tests.rs`, `cli/tests.rs`). `cli/tests.rs` contains `MockHttp`, `MockSession`, and `MockPresets` test doubles injected via `run_commands` — the `load`/`save`/`then` command paths are covered through the in-memory `MockPresets`, and there are no integration tests with real network calls or disk I/O.
 
 ## Extending the tool
 

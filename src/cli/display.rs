@@ -1,5 +1,4 @@
-use crate::http::status_reason;
-use crate::model::{Request, ResponseRecord, State};
+use crate::model::{Request, ResponseRecord, State, status_reason};
 use crate::session::SessionStore;
 
 use super::commands::{ResponseTarget, ResponseView};

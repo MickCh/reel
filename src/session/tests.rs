@@ -257,8 +257,9 @@ fn save_preset_stores_only_request_fields() {
         body: "body".to_string(),
     });
 
-    save_preset(&state.request, &path).unwrap();
-    let loaded = load_preset(&path).unwrap();
+    let presets = FilePresetStore;
+    presets.save(&state.request, &path).unwrap();
+    let loaded = presets.load(&path).unwrap();
     assert!(loaded.responses.is_empty());
     assert_eq!(loaded.request.url, Some("https://example.com".to_string()));
     fs::remove_dir_all(dir).ok();

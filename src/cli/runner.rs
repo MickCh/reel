@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 
 use crate::http::HttpClient;
 use crate::model::State;
-use crate::session::{SessionStore, load_preset, save_preset};
+use crate::session::{PresetStore, SessionStore};
 use crate::template::{Context, apply_interpolation};
 
 use super::commands::{Command, GlobalFlags, ParseResult, ResponseTarget, ResponseView};
@@ -49,6 +49,7 @@ pub fn run_commands(
     state: &mut State,
     http: &dyn HttpClient,
     session: &dyn SessionStore,
+    presets: &dyn PresetStore,
 ) -> Result<ParseResult> {
     let mut modified = false;
     let mut do_show = false;
@@ -73,7 +74,7 @@ pub fn run_commands(
 
                 // Replace the current request from the preset; the history
                 // stays in place so templates can reference it.
-                state.request = load_preset(&path)?.request;
+                state.request = presets.load(&path)?.request;
 
                 // Interpolate against the prior request/response history and the
                 // environment. Placeholders referencing missing history (or a
@@ -137,11 +138,11 @@ pub fn run_commands(
                 modified = true;
             }
             Command::Save(path) => {
-                save_preset(&state.request, &path)?;
+                presets.save(&state.request, &path)?;
                 eprintln!("Request saved to: {}", path.display());
             }
             Command::Load(path) => {
-                *state = load_preset(&path)?;
+                *state = presets.load(&path)?;
                 modified = true;
                 eprintln!("Request loaded from: {}", path.display());
             }

@@ -9,13 +9,6 @@ pub trait HttpClient {
     fn execute(&self, request: &Request, source: Option<&str>) -> Result<ResponseRecord>;
 }
 
-// Canonical reason phrase for an HTTP status code (e.g. 200 → "OK").
-pub fn status_reason(code: u16) -> Option<&'static str> {
-    reqwest::StatusCode::from_u16(code)
-        .ok()
-        .and_then(|s| s.canonical_reason())
-}
-
 pub struct ReqwestClient {
     client: reqwest::blocking::Client,
 }

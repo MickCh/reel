@@ -194,3 +194,18 @@ fn response_record_without_source_omits_field() {
     assert!(restored.source.is_none());
     assert_eq!(restored.status, 404);
 }
+
+// --- status_reason ---
+
+#[test]
+fn status_reason_known_codes() {
+    assert_eq!(status_reason(200), Some("OK"));
+    assert_eq!(status_reason(404), Some("Not Found"));
+    assert_eq!(status_reason(503), Some("Service Unavailable"));
+}
+
+#[test]
+fn status_reason_unknown_code_is_none() {
+    assert_eq!(status_reason(299), None);
+    assert_eq!(status_reason(999), None);
+}

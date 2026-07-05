@@ -2,9 +2,10 @@ use super::commands::{Command, ParseResult, ResponseTarget, ResponseView};
 use super::*;
 use crate::http::HttpClient;
 use crate::model::{Request, ResponseRecord, State};
-use crate::session::SessionStore;
+use crate::session::{PresetStore, SessionStore};
 use std::cell::{Cell, RefCell};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 // --- mocks ---
 
@@ -62,6 +63,36 @@ impl SessionStore for MockSession {
     }
     fn path(&self) -> &Path {
         Path::new("/tmp/mock-session.json")
+    }
+}
+
+// In-memory preset files keyed by path.
+#[derive(Default)]
+struct MockPresets {
+    files: HashMap<PathBuf, State>,
+    saved: RefCell<Vec<(PathBuf, Request)>>,
+}
+
+impl MockPresets {
+    fn with(path: &str, state: State) -> Self {
+        let mut presets = Self::default();
+        presets.files.insert(PathBuf::from(path), state);
+        presets
+    }
+}
+
+impl PresetStore for MockPresets {
+    fn load(&self, path: &Path) -> anyhow::Result<State> {
+        self.files
+            .get(path)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("error reading '{}': not found", path.display()))
+    }
+    fn save(&self, request: &Request, path: &Path) -> anyhow::Result<()> {
+        self.saved
+            .borrow_mut()
+            .push((path.to_path_buf(), request.clone()));
+        Ok(())
     }
 }
 
@@ -253,8 +284,18 @@ fn run(
     http: &dyn HttpClient,
     session: &dyn SessionStore,
 ) -> anyhow::Result<ParseResult> {
+    run_with_presets(input, state, http, session, &MockPresets::default())
+}
+
+fn run_with_presets(
+    input: &str,
+    state: &mut State,
+    http: &dyn HttpClient,
+    session: &dyn SessionStore,
+    presets: &dyn PresetStore,
+) -> anyhow::Result<ParseResult> {
     let (cmds, flags) = parse_args(&args(input)).unwrap();
-    run_commands(cmds, &flags, state, http, session)
+    run_commands(cmds, &flags, state, http, session, presets)
 }
 
 #[test]
@@ -309,7 +350,17 @@ fn fail_flag_on_4xx_returns_err() {
     state.request.url = Some("https://example.com".to_string());
 
     let (cmds, flags) = parse_args(&args("fail send")).unwrap();
-    assert!(run_commands(cmds, &flags, &mut state, &http, &session).is_err());
+    assert!(
+        run_commands(
+            cmds,
+            &flags,
+            &mut state,
+            &http,
+            &session,
+            &MockPresets::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -320,7 +371,17 @@ fn fail_flag_on_2xx_succeeds() {
     state.request.url = Some("https://example.com".to_string());
 
     let (cmds, flags) = parse_args(&args("fail send")).unwrap();
-    assert!(run_commands(cmds, &flags, &mut state, &http, &session).is_ok());
+    assert!(
+        run_commands(
+            cmds,
+            &flags,
+            &mut state,
+            &http,
+            &session,
+            &MockPresets::default()
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -331,7 +392,15 @@ fn dry_run_skips_http() {
     state.request.url = Some("https://example.com".to_string());
 
     let (cmds, flags) = parse_args(&args("--dry-run send")).unwrap();
-    run_commands(cmds, &flags, &mut state, &http, &session).unwrap();
+    run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
 
     assert!(state.responses.is_empty());
     assert_eq!(session.save_count.get(), 0);
@@ -455,4 +524,133 @@ fn no_mutation_does_not_save_session() {
     run("show", &mut state, &http, &session).unwrap();
 
     assert_eq!(session.save_count.get(), 0);
+}
+
+// --- load / save / then (preset store) ---
+
+fn preset(method: &str, url: &str) -> State {
+    let mut state = State::default();
+    state.request.method = Some(method.to_string());
+    state.request.url = Some(url.to_string());
+    state
+}
+
+#[test]
+fn load_replaces_state_and_saves_session() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let presets = MockPresets::with("p.json", preset("POST", "https://preset.example"));
+    let mut state = State::default();
+    state.request.url = Some("https://old.example".to_string());
+
+    run_with_presets("load p.json", &mut state, &http, &session, &presets).unwrap();
+
+    assert_eq!(state.request.method, Some("POST".to_string()));
+    assert_eq!(
+        state.request.url,
+        Some("https://preset.example".to_string())
+    );
+    assert_eq!(session.save_count.get(), 1);
+}
+
+#[test]
+fn load_missing_preset_is_error() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    assert!(run("load missing.json", &mut state, &http, &session).is_err());
+}
+
+#[test]
+fn save_writes_current_request_to_preset_store() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let presets = MockPresets::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    run_with_presets("save out.json", &mut state, &http, &session, &presets).unwrap();
+
+    let saved = presets.saved.borrow();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].0, PathBuf::from("out.json"));
+    assert_eq!(saved[0].1.url, Some("https://example.com".to_string()));
+    // `save` writes a preset; it does not modify the session.
+    assert_eq!(session.save_count.get(), 0);
+}
+
+#[test]
+fn then_appends_to_history() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let presets = MockPresets::with("step2.json", preset("GET", "https://step2.example"));
+    let mut state = State::default();
+    state.request.url = Some("https://step1.example".to_string());
+
+    run_with_presets(
+        "send then step2.json",
+        &mut state,
+        &http,
+        &session,
+        &presets,
+    )
+    .unwrap();
+
+    assert_eq!(state.requests.len(), 2);
+    assert_eq!(state.responses.len(), 2);
+    assert_eq!(
+        state.requests[1].url,
+        Some("https://step2.example".to_string())
+    );
+    assert_eq!(state.responses[1].source.as_deref(), Some("step2.json"));
+}
+
+#[test]
+fn then_interpolates_from_previous_response() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let presets = MockPresets::with(
+        "step2.json",
+        preset("GET", "https://example.com/${{ body.token }}"),
+    );
+    let mut state = State::default();
+    state.responses.push(ResponseRecord {
+        source: None,
+        status: 200,
+        headers: Default::default(),
+        body: r#"{"token":"abc"}"#.to_string(),
+    });
+
+    run_with_presets("then step2.json", &mut state, &http, &session, &presets).unwrap();
+
+    // The history snapshot holds the request as actually sent.
+    assert_eq!(
+        state.requests.last().unwrap().url,
+        Some("https://example.com/abc".to_string())
+    );
+    assert_eq!(state.responses.len(), 2);
+}
+
+#[test]
+fn then_with_missing_history_is_error() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let presets = MockPresets::with(
+        "step2.json",
+        preset("GET", "https://example.com/${{ body.token }}"),
+    );
+    let mut state = State::default();
+
+    assert!(run_with_presets("then step2.json", &mut state, &http, &session, &presets).is_err());
+    assert!(state.responses.is_empty());
+}
+
+#[test]
+fn then_missing_preset_is_error() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    assert!(run("then missing.json", &mut state, &http, &session).is_err());
 }

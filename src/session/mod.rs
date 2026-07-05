@@ -15,6 +15,14 @@ pub trait SessionStore {
     fn path(&self) -> &Path;
 }
 
+// Preset files: user-addressed request snapshots loaded by `load`/`then` and
+// written by `save`. Separate from SessionStore — presets live at caller-given
+// paths, sessions at keyed paths the store owns.
+pub trait PresetStore {
+    fn load(&self, path: &Path) -> Result<State>;
+    fn save(&self, request: &Request, path: &Path) -> Result<()>;
+}
+
 pub struct FileSessionStore {
     path: PathBuf,
     // Start time of the owning parent process. Some only for PPID-keyed
@@ -423,18 +431,22 @@ fn older_than(entry: &fs::DirEntry, cutoff: SystemTime) -> bool {
     )
 }
 
-// Presets store only the request fields — never the request/response history.
-pub fn save_preset(request: &Request, path: &Path) -> Result<()> {
-    let content = serde_json::to_string_pretty(request)?;
-    fs::write(path, content)
-        .map_err(|e| anyhow::anyhow!("error writing '{}': {}", path.display(), e))
-}
+pub struct FilePresetStore;
 
-pub fn load_preset(path: &Path) -> Result<State> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("error reading '{}': {}", path.display(), e))?;
-    serde_json::from_str(&content)
-        .map_err(|e| anyhow::anyhow!("error parsing '{}': {}", path.display(), e))
+impl PresetStore for FilePresetStore {
+    fn load(&self, path: &Path) -> Result<State> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("error reading '{}': {}", path.display(), e))?;
+        serde_json::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("error parsing '{}': {}", path.display(), e))
+    }
+
+    // Presets store only the request fields — never the request/response history.
+    fn save(&self, request: &Request, path: &Path) -> Result<()> {
+        let content = serde_json::to_string_pretty(request)?;
+        fs::write(path, content)
+            .map_err(|e| anyhow::anyhow!("error writing '{}': {}", path.display(), e))
+    }
 }
 
 #[cfg(test)]
