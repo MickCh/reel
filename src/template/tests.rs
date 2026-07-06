@@ -413,3 +413,118 @@ fn condition_empty_is_error() {
     };
     assert!(check_condition("  ", &ctx).is_err());
 }
+
+// --- template functions ---
+
+fn empty_ctx() -> Context<'static> {
+    Context {
+        requests: &[],
+        responses: &[],
+    }
+}
+
+#[test]
+fn uuid_function_generates_v4() {
+    let out = interpolate("${{ uuid() }}", &empty_ctx()).unwrap();
+    assert_eq!(out.len(), 36);
+    assert_eq!(out.as_bytes()[14], b'4');
+    for i in [8, 13, 18, 23] {
+        assert_eq!(out.as_bytes()[i], b'-', "{out}");
+    }
+    // Each placeholder is evaluated independently.
+    let two = interpolate("${{ uuid() }} ${{ uuid() }}", &empty_ctx()).unwrap();
+    let (a, b) = two.split_once(' ').unwrap();
+    assert_ne!(a, b);
+}
+
+#[test]
+fn uuid_function_rejects_arguments() {
+    assert!(interpolate("${{ uuid(7) }}", &empty_ctx()).is_err());
+}
+
+#[test]
+fn now_function_returns_unix_seconds() {
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let out: i64 = interpolate("${{ now() }}", &empty_ctx())
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((out - before).abs() <= 2, "now()={out} vs {before}");
+}
+
+#[test]
+fn now_function_applies_offset() {
+    let base: i64 = interpolate("${{ now() }}", &empty_ctx())
+        .unwrap()
+        .parse()
+        .unwrap();
+    let plus: i64 = interpolate("${{ now(+3600) }}", &empty_ctx())
+        .unwrap()
+        .parse()
+        .unwrap();
+    let minus: i64 = interpolate("${{ now(-60) }}", &empty_ctx())
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((plus - base - 3600).abs() <= 2);
+    assert!((minus - base + 60).abs() <= 2);
+}
+
+#[test]
+fn now_function_invalid_offset_is_error() {
+    assert!(interpolate("${{ now(soon) }}", &empty_ctx()).is_err());
+}
+
+#[test]
+fn base64_function_encodes_literal() {
+    assert_eq!(
+        interpolate("${{ base64('hello') }}", &empty_ctx()).unwrap(),
+        "aGVsbG8="
+    );
+    assert_eq!(
+        interpolate("${{ base64('user:pass') }}", &empty_ctx()).unwrap(),
+        "dXNlcjpwYXNz"
+    );
+    // Padding edge cases.
+    assert_eq!(
+        interpolate("${{ base64('a') }}", &empty_ctx()).unwrap(),
+        "YQ=="
+    );
+    assert_eq!(
+        interpolate("${{ base64('ab') }}", &empty_ctx()).unwrap(),
+        "YWI="
+    );
+    assert_eq!(
+        interpolate("${{ base64('abc') }}", &empty_ctx()).unwrap(),
+        "YWJj"
+    );
+}
+
+#[test]
+fn base64_function_evaluates_nested_expression() {
+    let responses = [record(200, r#"{"token":"abc"}"#, &[])];
+    let ctx = Context {
+        requests: &[],
+        responses: &responses,
+    };
+    assert_eq!(
+        interpolate("${{ base64(body.token) }}", &ctx).unwrap(),
+        "YWJj"
+    );
+}
+
+#[test]
+fn base64_function_without_argument_is_error() {
+    assert!(interpolate("${{ base64() }}", &empty_ctx()).is_err());
+}
+
+#[test]
+fn unknown_function_is_error() {
+    let err = interpolate("${{ rot13('x') }}", &empty_ctx())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown template function"), "{err}");
+}

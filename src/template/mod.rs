@@ -156,9 +156,85 @@ fn pick<'a, T>(records: &'a [T], idx: Option<usize>, kind: &str) -> Result<&'a T
     }
 }
 
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = u32::from_be_bytes([
+            0,
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ]);
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+// Evaluate a `name(args)` template function.
+//
+// Supported functions:
+//   uuid()              → random v4 UUID (e.g. idempotency keys)
+//   now()               → current Unix timestamp in seconds
+//   now(±N)             → Unix timestamp shifted by N seconds (e.g. now(+3600))
+//   base64(<arg>)       → base64 of the argument: either a single-quoted
+//                         literal ('user:pass') or a nested expression
+//                         (env.CREDS, body.token, ...), evaluated recursively
+fn eval_function(name: &str, args: &str, ctx: &Context) -> Result<String> {
+    match name {
+        "uuid" => {
+            if !args.is_empty() {
+                bail!("uuid() takes no arguments");
+            }
+            Ok(uuid::Uuid::new_v4().to_string())
+        }
+        "now" => {
+            let offset: i64 = if args.is_empty() {
+                0
+            } else {
+                args.strip_prefix('+')
+                    .unwrap_or(args)
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("invalid now() offset '{}'", args))?
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before Unix epoch")
+                .as_secs() as i64;
+            Ok((now + offset).to_string())
+        }
+        "base64" => {
+            if args.is_empty() {
+                bail!("base64() requires an argument (a 'literal' or an expression)");
+            }
+            let value = match args.strip_prefix('\'').and_then(|a| a.strip_suffix('\'')) {
+                Some(literal) => literal.to_string(),
+                None => eval_expr(args, ctx)?,
+            };
+            Ok(base64_encode(value.as_bytes()))
+        }
+        other => bail!(
+            "unknown template function '{}()' (supported: uuid, now, base64)",
+            other
+        ),
+    }
+}
+
 // Evaluate a single ${{ expr }} against the session history and environment.
 //
 // Supported forms:
+//   uuid() / now() / base64(<arg>) → template functions (see eval_function)
 //   env.<NAME>                 → process environment variable
 //   status                     → status of the last response
 //   body                       → raw body of the last response
@@ -172,6 +248,14 @@ fn pick<'a, T>(records: &'a [T], idx: Option<usize>, kind: &str) -> Result<&'a T
 //   request.headers.<name>     → header from the last request
 //   request[N].<field>         → field of the Nth request (1-based)
 fn eval_expr(expr: &str, ctx: &Context) -> Result<String> {
+    // Function call: name(args). No other expression form contains
+    // parentheses, so this cannot misfire on field paths.
+    if let Some(open) = expr.find('(')
+        && let Some(args) = expr[open + 1..].strip_suffix(')')
+    {
+        return eval_function(expr[..open].trim_end(), args.trim(), ctx);
+    }
+
     // Environment variables — independent of request/response history.
     if let Some(name) = expr.strip_prefix("env.") {
         return std::env::var(name)

@@ -171,6 +171,9 @@ Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `
 | `request.headers.<name>` | Request header value from the last request (case-insensitive) |
 | `request[N].<field>` | Any of the above `request` fields for the Nth request (1-based) |
 | `env.<NAME>` | Value of environment variable `NAME` |
+| `uuid()` | Random v4 UUID (each placeholder evaluated independently) |
+| `now()` / `now(±N)` | Current Unix timestamp in seconds, optionally shifted by N seconds |
+| `base64(<arg>)` | Base64 of the argument: a single-quoted literal (`base64('user:pass')`) or a nested expression (`base64(env.CREDS)`), evaluated recursively |
 
 The bare `body`/`status`/`headers.*` forms always refer to the **last** response; bare `request.*` refers to the **last** request. Use `response[N].*` / `request[N].*` to reach any earlier entry in the chain by 1-based index. Requests and responses share the same 1-based index (`request[N]` is the request that produced `response[N]`). Request records are captured *after* interpolation, so `request.*` reflects the values actually sent.
 
@@ -198,6 +201,7 @@ The `response` command peeks at the next token(s) to consume an optional `all`/i
 | `serde` + `serde_json` | State serialization |
 | `dirs` | Cross-platform home directory |
 | `url` | Host/path extraction from the request URL for cookie scoping (already in the tree via reqwest) |
+| `uuid` (v4) | `${{ uuid() }}` template function |
 | `libc` (Unix only) | PPID lookup via `getppid()`; process liveness via `kill(pid, 0)` |
 | `windows-sys` (Windows only) | PPID lookup via `CreateToolhelp32Snapshot`; process start time / liveness via `OpenProcess`, `GetProcessTimes`, `GetExitCodeProcess` |
 

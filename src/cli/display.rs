@@ -183,6 +183,11 @@ pub fn print_usage() {
     eprintln!("  ${{{{ request.headers.name }}}}    header value from the last request");
     eprintln!("  ${{{{ request[N].url }}}}          field of the Nth request (1-based)");
     eprintln!("  ${{{{ env.NAME }}}}                value of environment variable NAME");
+    eprintln!("  ${{{{ uuid() }}}}                  random v4 UUID");
+    eprintln!(
+        "  ${{{{ now() }}}} / ${{{{ now(+N) }}}}     Unix timestamp, optionally shifted by N seconds"
+    );
+    eprintln!("  ${{{{ base64(arg) }}}}             base64 of a 'literal' or nested expression");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  reel method GET url https://httpbin.org/get send");

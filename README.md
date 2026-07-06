@@ -199,6 +199,9 @@ Supported expressions in preset files:
 | `${{ request.headers.name }}` | A header value from the last request (case-insensitive) |
 | `${{ request[N].url }}` | Any `request` field for the Nth request (1-based) |
 | `${{ env.NAME }}` | Value of the environment variable `NAME` |
+| `${{ uuid() }}` | A random v4 UUID (fresh per placeholder — handy for idempotency keys) |
+| `${{ now() }}` / `${{ now(+3600) }}` | Current Unix timestamp in seconds, optionally shifted |
+| `${{ base64('user:pass') }}` / `${{ base64(env.CREDS) }}` | Base64 of a quoted literal or of a nested expression (e.g. for Basic auth) |
 
 The bare `body`/`status`/`headers.*` forms always refer to the **last** response, and bare `request.*` to the **last** request. Use `response[N].*` / `request[N].*` when you need to reach an earlier step in the chain — requests and responses share the same index, so `request[N]` is the request that produced `response[N]`.
 
