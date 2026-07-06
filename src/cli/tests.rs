@@ -771,6 +771,91 @@ fn dry_run_skips_expect() {
     .unwrap();
 }
 
+// --- curl export ---
+
+#[test]
+fn parse_curl() {
+    let (cmds, _) = parse_args(&args("curl")).unwrap();
+    assert!(matches!(cmds[0], Command::Curl));
+}
+
+#[test]
+fn format_curl_full_request() {
+    let mut request = Request {
+        method: Some("POST".to_string()),
+        url: Some("https://api.example.com/users".to_string()),
+        body: Some(r#"{"name":"Alice"}"#.to_string()),
+        ..Default::default()
+    };
+    request
+        .headers
+        .insert("Content-Type".to_string(), "application/json".to_string());
+    request
+        .headers
+        .insert("Authorization".to_string(), "Bearer tok".to_string());
+
+    let cmd = display::format_curl(&request, false).unwrap();
+    assert_eq!(
+        cmd,
+        r#"curl -X POST 'https://api.example.com/users' -H 'Authorization: Bearer tok' -H 'Content-Type: application/json' --data-binary '{"name":"Alice"}'"#
+    );
+}
+
+#[test]
+fn format_curl_quotes_apostrophes() {
+    let request = Request {
+        url: Some("https://example.com".to_string()),
+        body: Some("it's".to_string()),
+        ..Default::default()
+    };
+
+    let cmd = display::format_curl(&request, false).unwrap();
+    // Body forces an explicit -X GET (curl would otherwise switch to POST).
+    assert_eq!(
+        cmd,
+        r#"curl -X GET 'https://example.com' --data-binary 'it'\''s'"#
+    );
+}
+
+#[test]
+fn format_curl_bare_get_and_insecure() {
+    let request = Request {
+        url: Some("https://example.com".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        display::format_curl(&request, true).unwrap(),
+        "curl -k 'https://example.com'"
+    );
+}
+
+#[test]
+fn format_curl_without_url_is_error() {
+    assert!(display::format_curl(&Request::default(), false).is_err());
+}
+
+#[test]
+fn curl_command_does_not_modify_session() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    run("curl", &mut state, &http, &session).unwrap();
+
+    assert_eq!(session.save_count.get(), 0);
+    assert!(http.seen.borrow().is_empty());
+}
+
+#[test]
+fn curl_without_url_is_error() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    assert!(run("curl", &mut state, &http, &session).is_err());
+}
+
 // --- verb shortcuts ---
 
 #[test]

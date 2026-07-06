@@ -24,6 +24,7 @@ pub enum Command {
     Send,
     Then(PathBuf),
     Expect(String),
+    Curl,
     Show,
     Response(ResponseTarget, ResponseView),
     Reset,

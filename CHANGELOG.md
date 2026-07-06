@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Template default values: `${{ expr | default: value }}` uses the fallback when the expression cannot be resolved (unset environment variable, missing history or JSON key) instead of aborting the chain.
 - `body @<PATH>` reads the request body from a file and `body -` from stdin (both verbatim); `@@` escapes a literal body starting with `@`.
 - Verb shortcuts: `reel get <URL>` (and `post`/`put`/`patch`/`delete`/`head`/`options`) sets the method and URL and sends in one word. The implied send runs after all other commands (so trailing `body`/`header` still apply) and before any `expect`; it is skipped when an explicit `send`/`then` is present.
+- `curl` command: prints the current request (session cookies included) as an equivalent shell-quoted `curl` command on stdout.
 
 ## [0.1.1] - 2026-07-03
 

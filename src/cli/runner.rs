@@ -6,7 +6,7 @@ use crate::session::{PresetStore, SessionStore};
 use crate::template::{Context, apply_interpolation, check_condition};
 
 use super::commands::{Command, GlobalFlags, ParseResult, ResponseTarget, ResponseView};
-use super::display::{format_status, print_dry_run};
+use super::display::{format_curl, format_status, print_dry_run};
 
 // Host, path, and https-ness of the request URL — the context needed for
 // cookie matching. None when the URL is unset or unparseable (in which case
@@ -215,6 +215,12 @@ pub fn run_commands(
                 };
                 check_condition(&condition, &ctx).map_err(|e| anyhow::anyhow!("error: {}", e))?;
                 eprintln!("expect ok: {}", condition);
+            }
+            Command::Curl => {
+                // The command reproduces what reel would send, session
+                // cookies included. Stdout: it is data, not a diagnostic.
+                let request = with_session_cookies(&state.request, &state.cookies);
+                println!("{}", format_curl(&request, flags.insecure)?);
             }
             Command::Show => {
                 do_show = true;

@@ -126,6 +126,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
             }
             "send" => commands.push(Command::Send),
             "show" => commands.push(Command::Show),
+            "curl" => commands.push(Command::Curl),
             "reset" => commands.push(Command::Reset),
             "header-rm-all" => commands.push(Command::HeaderRmAll),
             "method" => {

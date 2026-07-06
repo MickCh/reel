@@ -79,6 +79,7 @@ Commands can be combined freely in a single invocation.
 | `--dry-run` | Print the request that would be sent, without sending it (position-independent) |
 | `then <PATH>` | Load preset file, interpolate `${{ expr }}` from request/response history and environment, and send |
 | `show` | Print the current session state |
+| `curl` | Print the current request as an equivalent `curl` command |
 | `response [N\|all] [body\|headers]` | Show Nth response (default: last), or all; full JSON, body only, or headers only |
 | `reset` | Clear all session state |
 | `load <PATH>` | Load state from a JSON file |
@@ -161,6 +162,15 @@ reel response all headers
 
 `response` reads from the stored session state, so it works even after the
 original `send` has finished — no need to re-run the request.
+
+### Export as curl
+
+`reel curl` prints the current request as a copy-pasteable `curl` command — for bug reports, docs, or colleagues without reel. Session cookies are included, values are shell-quoted, and the command goes to stdout (it is data):
+
+```bash
+$ reel curl
+curl -X POST 'https://api.example.com/users' -H 'Content-Type: application/json' --data-binary '{"name":"Alice"}'
+```
 
 ### Save and restore sessions
 

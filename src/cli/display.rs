@@ -155,6 +155,7 @@ pub fn print_usage() {
         "                         forms: <expr>, <expr> == <v>, <expr> != <v>, <expr> contains <v>"
     );
     eprintln!("  show                   print the current session state");
+    eprintln!("  curl                   print the current request as an equivalent curl command");
     eprintln!(
         "  response [N|all] [body|headers]   show Nth response (1-based, default: last), or all; full JSON, body, or headers"
     );
@@ -228,6 +229,43 @@ pub fn print_usage() {
     eprintln!(
         "      This means 'reel send | jq .' works correctly even when confirmations are visible."
     );
+}
+
+// POSIX single-quote: wrap in ', escaping embedded ' as '\''.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+// The current request as an equivalent curl command — for sharing in issues,
+// docs, or with people who don't have reel.
+pub(super) fn format_curl(request: &Request, insecure: bool) -> anyhow::Result<String> {
+    let url = request
+        .url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("error: URL not set (use: reel url <URL>)"))?;
+
+    let mut parts = vec!["curl".to_string()];
+    // reel defaults to GET even with a body; curl would switch to POST on
+    // --data, so spell the method out whenever a body is present.
+    match (&request.method, &request.body) {
+        (Some(m), _) => parts.push(format!("-X {}", m)),
+        (None, Some(_)) => parts.push("-X GET".to_string()),
+        (None, None) => {}
+    }
+    if insecure {
+        parts.push("-k".to_string());
+    }
+    parts.push(shell_quote(url));
+    for (name, value) in request.headers.sorted() {
+        parts.push(format!(
+            "-H {}",
+            shell_quote(&format!("{}: {}", name, value))
+        ));
+    }
+    if let Some(body) = &request.body {
+        parts.push(format!("--data-binary {}", shell_quote(body)));
+    }
+    Ok(parts.join(" "))
 }
 
 pub(super) fn print_dry_run(request: &Request) {
