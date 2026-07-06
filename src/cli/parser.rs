@@ -93,9 +93,19 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
     };
 
     let mut commands = Vec::new();
+    let mut implied_send = false;
     let mut tokens = Tokens::new(args);
     while let Some(token) = tokens.next() {
         match token {
+            // Verb shortcuts: `reel get <URL>` = method + url + one implied
+            // send, appended after all commands so modifiers written after
+            // the verb (body, header, ...) still apply to the request.
+            "get" | "post" | "put" | "patch" | "delete" | "head" | "options" => {
+                let url = tokens.value_for(token, "a URL")?;
+                commands.push(Command::Method(token.to_uppercase()));
+                commands.push(Command::Url(url.to_string()));
+                implied_send = true;
+            }
             "fail" | "--insecure" | "insecure" | "--dry-run" | "dry-run" => {}
             "--retry" => {
                 let value = tokens.value_for("--retry", "a number of retries")?;
@@ -167,5 +177,21 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
             }
         }
     }
+
+    // A verb shortcut implies exactly one send, unless the user already wrote
+    // an explicit send/then. It goes before the first expect so assertions
+    // check the verb's response.
+    if implied_send
+        && !commands
+            .iter()
+            .any(|c| matches!(c, Command::Send | Command::Then(_)))
+    {
+        let pos = commands
+            .iter()
+            .position(|c| matches!(c, Command::Expect(_)))
+            .unwrap_or(commands.len());
+        commands.insert(pos, Command::Send);
+    }
+
     Ok((commands, flags))
 }

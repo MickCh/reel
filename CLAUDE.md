@@ -188,6 +188,8 @@ No external parser (no `clap`). `parse_args` is a hand-written loop over a small
 
 `show` and `response` are deferred — `parse_args` records them in the `Command` stream and `run_commands` sets flags for them, running them after all other commands complete.
 
+Verb shortcuts (`get`/`post`/`put`/`patch`/`delete`/`head`/`options <URL>`) expand at parse time to `Method` + `Url`, plus one implied `Send` inserted after the loop — before the first `Expect` if any, otherwise at the end — so modifiers written after the verb still apply to the request. The implied `Send` is skipped when the command stream already contains an explicit `Send`/`Then`.
+
 The `response` command peeks at the next token(s) to consume an optional `all`/index and/or `body`/`headers` modifier.
 
 `fail`, `--insecure`, and `--dry-run` are pre-scanned before the loop and returned as `GlobalFlags`; they apply globally regardless of position. Their tokens are consumed and not added to `Vec<Command>`.

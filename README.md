@@ -74,6 +74,7 @@ Commands can be combined freely in a single invocation.
 | `body <BODY>` | Set request body |
 | `body @<PATH>` / `body -` | Set request body from a file / from stdin (`@@` escapes a body that starts with a literal `@`) |
 | `send` | Send the request using current session state |
+| `get`/`post`/`put`/`patch`/`delete`/`head`/`options` `<URL>` | Shortcut: set method + URL and send |
 | `expect <CONDITION>` | Assert on the last response; abort with exit code 1 on failure |
 | `--dry-run` | Print the request that would be sent, without sending it (position-independent) |
 | `then <PATH>` | Load preset file, interpolate `${{ expr }}` from request/response history and environment, and send |
@@ -106,6 +107,14 @@ reel send
 
 ```bash
 reel method GET url https://httpbin.org/get send
+```
+
+Or with a verb shortcut — `get`/`post`/`put`/`patch`/`delete`/`head`/`options` set the method and URL and send in one word. The implied send runs after all other commands in the invocation, so a `body` or `header` written after the verb still applies to the request (and it lands before any `expect`, so assertions check its response):
+
+```bash
+reel get https://httpbin.org/get
+reel post https://api.example.com/users body '{"name":"Alice"}'
+reel get https://api.example.com/health expect 'status == 200'
 ```
 
 ### Body from a file or stdin

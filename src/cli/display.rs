@@ -137,6 +137,12 @@ pub fn print_usage() {
     );
     eprintln!("  send                   send the current request");
     eprintln!(
+        "  get/post/put/patch/delete/head/options <URL>   shortcut: set method + URL and send"
+    );
+    eprintln!(
+        "                         (the send runs after all other commands, so trailing body/header apply)"
+    );
+    eprintln!(
         "  --dry-run              print the request that would be sent, without sending it (position-independent)"
     );
     eprintln!(
@@ -196,6 +202,8 @@ pub fn print_usage() {
     );
     eprintln!();
     eprintln!("Examples:");
+    eprintln!("  reel get https://httpbin.org/get");
+    eprintln!("  reel post https://api.example.com/users body '{{\"name\":\"Alice\"}}'");
     eprintln!("  reel method GET url https://httpbin.org/get send");
     eprintln!("  reel header \"Authorization: Bearer token\"");
     eprintln!("  reel header Content-Type application/json");

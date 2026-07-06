@@ -771,6 +771,75 @@ fn dry_run_skips_expect() {
     .unwrap();
 }
 
+// --- verb shortcuts ---
+
+#[test]
+fn parse_verb_expands_to_method_url_send() {
+    let (cmds, _) = parse_args(&args("get https://example.com")).unwrap();
+    assert_eq!(cmds.len(), 3);
+    assert!(matches!(&cmds[0], Command::Method(m) if m == "GET"));
+    assert!(matches!(&cmds[1], Command::Url(u) if u == "https://example.com"));
+    assert!(matches!(cmds[2], Command::Send));
+}
+
+#[test]
+fn parse_verb_implied_send_comes_after_modifiers() {
+    let (cmds, _) = parse_args(&args("post https://example.com body {} header X-A:1")).unwrap();
+    // body and header written after the verb still apply before the send.
+    assert!(matches!(cmds[0], Command::Method(_)));
+    assert!(matches!(cmds[1], Command::Url(_)));
+    assert!(matches!(cmds[2], Command::Body(_)));
+    assert!(matches!(cmds[3], Command::Header(..)));
+    assert!(matches!(cmds[4], Command::Send));
+}
+
+#[test]
+fn parse_verb_implied_send_precedes_expect() {
+    let (cmds, _) = parse_args(&[
+        s("get"),
+        s("https://example.com"),
+        s("expect"),
+        s("status == 200"),
+    ])
+    .unwrap();
+    assert!(matches!(cmds[2], Command::Send));
+    assert!(matches!(&cmds[3], Command::Expect(_)));
+}
+
+#[test]
+fn parse_verb_with_explicit_send_adds_no_extra() {
+    let (cmds, _) = parse_args(&args("get https://example.com send")).unwrap();
+    let sends = cmds.iter().filter(|c| matches!(c, Command::Send)).count();
+    assert_eq!(sends, 1);
+}
+
+#[test]
+fn parse_verb_without_url_is_error() {
+    assert!(parse_args(&args("get")).is_err());
+    assert!(parse_args(&args("post")).is_err());
+}
+
+#[test]
+fn verb_shortcut_sends_request() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run(
+        "post https://example.com body {\"a\":1}",
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    let seen = http.seen.borrow();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].method.as_deref(), Some("POST"));
+    assert_eq!(seen[0].url.as_deref(), Some("https://example.com"));
+    assert_eq!(seen[0].body.as_deref(), Some("{\"a\":1}"));
+}
+
 // --- body @file / stdin ---
 
 #[test]
