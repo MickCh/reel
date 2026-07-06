@@ -9,32 +9,39 @@ use std::path::{Path, PathBuf};
 
 // --- mocks ---
 
+fn response(status: u16, body: &str) -> ResponseRecord {
+    ResponseRecord {
+        status,
+        body: body.to_string(),
+        ..Default::default()
+    }
+}
+
+// Responses are consumed front-to-back; the last one repeats forever.
 struct MockHttp {
-    response: Result<ResponseRecord, ()>,
+    responses: RefCell<Vec<Result<ResponseRecord, ()>>>,
     seen: RefCell<Vec<Request>>,
 }
 
 impl MockHttp {
-    fn ok(status: u16) -> Self {
+    fn sequence(responses: Vec<Result<ResponseRecord, ()>>) -> Self {
+        assert!(!responses.is_empty());
         Self {
-            response: Ok(ResponseRecord {
-                status,
-                body: "{}".to_string(),
-                ..Default::default()
-            }),
+            responses: RefCell::new(responses),
             seen: RefCell::new(Vec::new()),
         }
+    }
+
+    fn ok(status: u16) -> Self {
+        Self::sequence(vec![Ok(response(status, "{}"))])
     }
 
     fn err() -> Self {
-        Self {
-            response: Err(()),
-            seen: RefCell::new(Vec::new()),
-        }
+        Self::sequence(vec![Err(())])
     }
 
-    fn with_set_cookies(mut self, cookies: &[&str]) -> Self {
-        if let Ok(r) = &mut self.response {
+    fn with_set_cookies(self, cookies: &[&str]) -> Self {
+        for r in self.responses.borrow_mut().iter_mut().flatten() {
             r.set_cookies = cookies.iter().map(|s| s.to_string()).collect();
         }
         self
@@ -44,8 +51,13 @@ impl MockHttp {
 impl HttpClient for MockHttp {
     fn execute(&self, request: &Request, source: Option<&str>) -> anyhow::Result<ResponseRecord> {
         self.seen.borrow_mut().push(request.clone());
-        self.response
-            .clone()
+        let mut responses = self.responses.borrow_mut();
+        let response = if responses.len() > 1 {
+            responses.remove(0)
+        } else {
+            responses[0].clone()
+        };
+        response
             .map(|mut r| {
                 r.source = source.map(str::to_string);
                 r
@@ -757,6 +769,172 @@ fn dry_run_skips_expect() {
         &MockPresets::default(),
     )
     .unwrap();
+}
+
+// --- retry / polling ---
+
+#[test]
+fn parse_retry_until_delay_flags() {
+    let (cmds, flags) =
+        parse_args(&[s("--retry"), s("3"), s("--delay"), s("0"), s("send")]).unwrap();
+    assert_eq!(flags.retry, 3);
+    assert_eq!(flags.delay_secs, 0);
+    assert_eq!(cmds.len(), 1);
+
+    let (_, flags) = parse_args(&[s("--until"), s("status == 200"), s("send")]).unwrap();
+    assert_eq!(flags.until.as_deref(), Some("status == 200"));
+}
+
+#[test]
+fn parse_retry_invalid_value_is_error() {
+    assert!(parse_args(&args("--retry x send")).is_err());
+    assert!(parse_args(&args("--retry")).is_err());
+    assert!(parse_args(&args("--delay x")).is_err());
+}
+
+#[test]
+fn retry_on_5xx_succeeds_on_second_attempt() {
+    let http = MockHttp::sequence(vec![Ok(response(503, "busy")), Ok(response(200, "ok"))]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    run("--retry 2 --delay 0 send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(http.seen.borrow().len(), 2);
+    // Only the final attempt is recorded.
+    assert_eq!(state.responses.len(), 1);
+    assert_eq!(state.responses[0].status, 200);
+}
+
+#[test]
+fn retry_exhausted_records_last_response() {
+    let http = MockHttp::ok(503);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    run("--retry 1 --delay 0 send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(http.seen.borrow().len(), 2);
+    assert_eq!(state.responses[0].status, 503);
+}
+
+#[test]
+fn no_retry_without_flag() {
+    let http = MockHttp::sequence(vec![Ok(response(503, "busy")), Ok(response(200, "ok"))]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    run("send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(http.seen.borrow().len(), 1);
+    assert_eq!(state.responses[0].status, 503);
+}
+
+#[test]
+fn retry_recovers_from_network_error() {
+    let http = MockHttp::sequence(vec![Err(()), Ok(response(200, "ok"))]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    run("--retry 1 --delay 0 send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.responses[0].status, 200);
+}
+
+#[test]
+fn network_error_without_retry_budget_is_error() {
+    let http = MockHttp::err();
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    assert!(run("--retry 0 --delay 0 send", &mut state, &http, &session).is_err());
+}
+
+#[test]
+fn does_not_retry_4xx() {
+    let http = MockHttp::sequence(vec![Ok(response(404, "no")), Ok(response(200, "ok"))]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    run("--retry 2 --delay 0 send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(http.seen.borrow().len(), 1);
+    assert_eq!(state.responses[0].status, 404);
+}
+
+#[test]
+fn until_polls_until_condition_met() {
+    let http = MockHttp::sequence(vec![
+        Ok(response(200, r#"{"state":"pending"}"#)),
+        Ok(response(200, r#"{"state":"pending"}"#)),
+        Ok(response(200, r#"{"state":"ready"}"#)),
+    ]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    let (cmds, flags) = parse_args(&[
+        s("--until"),
+        s("body.state == ready"),
+        s("--delay"),
+        s("0"),
+        s("send"),
+    ])
+    .unwrap();
+    run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+
+    assert_eq!(http.seen.borrow().len(), 3);
+    // Only the response that satisfied the condition is recorded.
+    assert_eq!(state.responses.len(), 1);
+    assert!(state.responses[0].body.contains("ready"));
+}
+
+#[test]
+fn until_budget_exhausted_records_and_errors() {
+    let http = MockHttp::ok(200); // body "{}" never matches
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    let (cmds, flags) = parse_args(&[
+        s("--until"),
+        s("body.state == ready"),
+        s("--retry"),
+        s("2"),
+        s("--delay"),
+        s("0"),
+        s("send"),
+    ])
+    .unwrap();
+    let err = run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("not met after 3"), "{err}");
+    assert_eq!(http.seen.borrow().len(), 3);
+    // The last response is still recorded and persisted for inspection.
+    assert_eq!(state.responses.len(), 1);
+    assert_eq!(session.save_count.get(), 1);
 }
 
 // --- cookie jar ---

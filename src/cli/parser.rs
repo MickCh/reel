@@ -78,12 +78,18 @@ fn parse_header(tokens: &mut Tokens) -> Result<Command> {
 }
 
 pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
-    // Global flags apply regardless of position; pre-scan them here and skip
-    // their tokens in the command loop below.
-    let flags = GlobalFlags {
+    // Global flags apply regardless of position; pre-scan the value-less ones
+    // here and skip their tokens in the command loop below. Flags that take a
+    // value (--retry, --until, --delay) are consumed inside the loop — they
+    // are still position-independent because all flags take effect only after
+    // parsing completes.
+    let mut flags = GlobalFlags {
         insecure: args.iter().any(|a| a == "--insecure" || a == "insecure"),
         fail_on_error: args.iter().any(|a| a == "fail"),
         dry_run: args.iter().any(|a| a == "--dry-run" || a == "dry-run"),
+        retry: 0,
+        until: None,
+        delay_secs: 1,
     };
 
     let mut commands = Vec::new();
@@ -91,6 +97,23 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
     while let Some(token) = tokens.next() {
         match token {
             "fail" | "--insecure" | "insecure" | "--dry-run" | "dry-run" => {}
+            "--retry" => {
+                let value = tokens.value_for("--retry", "a number of retries")?;
+                flags.retry = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("error: invalid --retry count '{}'", value))?;
+            }
+            "--until" => {
+                let condition =
+                    tokens.value_for("--until", "a condition (e.g. --until 'status == 200')")?;
+                flags.until = Some(condition.to_string());
+            }
+            "--delay" => {
+                let value = tokens.value_for("--delay", "a number of seconds")?;
+                flags.delay_secs = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("error: invalid --delay seconds '{}'", value))?;
+            }
             "send" => commands.push(Command::Send),
             "show" => commands.push(Command::Show),
             "reset" => commands.push(Command::Reset),

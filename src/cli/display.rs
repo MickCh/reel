@@ -156,6 +156,16 @@ pub fn print_usage() {
         "  fail                   exit with code 1 if any response is 4xx/5xx (position-independent)"
     );
     eprintln!("  insecure / --insecure  skip TLS certificate verification (position-independent)");
+    eprintln!(
+        "  --retry <N>            retry send/then up to N extra times on network error or 5xx"
+    );
+    eprintln!(
+        "  --until <CONDITION>    poll: repeat send/then until the condition passes (see expect);"
+    );
+    eprintln!(
+        "                         attempt budget is --retry + 1, or 10 when --retry is not given"
+    );
+    eprintln!("  --delay <SECONDS>      sleep between attempts (default: 1)");
     eprintln!("  -h / --help            show this help");
     eprintln!("  -V / --version         show version");
     eprintln!();

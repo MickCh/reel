@@ -83,6 +83,9 @@ Commands can be combined freely in a single invocation.
 | `save <PATH>` | Save current session state to a JSON file |
 | `fail` | Exit with code 1 if any `send` or `then` receives a 4xx/5xx response (position-independent) |
 | `--insecure` | Skip TLS certificate verification |
+| `--retry <N>` | Retry `send`/`then` up to N extra times on network error or 5xx |
+| `--until <CONDITION>` | Poll: repeat `send`/`then` until the condition passes |
+| `--delay <SECONDS>` | Sleep between retry/poll attempts (default: 1) |
 
 ## Usage examples
 
@@ -304,6 +307,24 @@ reel load login.json send expect 'status == 200' then create.json expect 'status
 ```
 
 Supported forms: `<expr>` (must resolve), `<expr> == <value>`, `<expr> != <value>`, `<expr> contains <value>`. Any template expression works, including `response[N].*`, `request.*`, and `env.*`. A failing `expect` stops later commands from running — useful in CI scripts and as a guard before a destructive `then` step.
+
+### Retrying and polling
+
+`--retry N` retries a failed `send`/`then` up to N extra times — a failure being a network error or a 5xx response. 4xx responses are not retried (they are deterministic client errors). Only the final attempt is recorded in the session history.
+
+```bash
+reel --retry 3 send                    # tolerate a flaky endpoint
+reel --retry 3 --delay 5 send          # wait 5s between attempts
+```
+
+`--until CONDITION` turns `send`/`then` into a poll loop: the request repeats until the condition (same syntax as `expect`) passes. The attempt budget is `--retry + 1` when `--retry` is given, otherwise 10. If the budget runs out, the last response is still recorded for inspection, but reel exits with code 1.
+
+```bash
+reel url https://api.example.com/jobs/42 --until 'body.state == done' --delay 2 send
+reel --until 'status == 200' --retry 30 --delay 10 send    # wait for a deploy
+```
+
+Both flags are position-independent and apply to every `send`/`then` in the invocation.
 
 ## Cookies
 

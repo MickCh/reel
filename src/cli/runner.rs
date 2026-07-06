@@ -46,7 +46,62 @@ fn execute_and_record(
     }
 
     let request = with_session_cookies(&state.request, &state.cookies);
-    let record = http.execute(&request, source)?;
+
+    // Attempt budget: --retry N gives N extra attempts; polling with --until
+    // alone gets a default budget of 10 attempts.
+    let max_attempts = match (&flags.until, flags.retry) {
+        (Some(_), 0) => 10,
+        (_, retry) => retry + 1,
+    };
+    let mut attempt = 1u32;
+    // Set when --until exhausts its budget: the last response is still
+    // recorded and printed, but the chain aborts afterwards.
+    let mut until_error = None;
+
+    let record = loop {
+        let reason = match http.execute(&request, source) {
+            Ok(record) => {
+                if let Some(condition) = &flags.until {
+                    // Evaluate against the history as it would look with this
+                    // response appended.
+                    let mut responses = state.responses.clone();
+                    responses.push(record.clone());
+                    let ctx = Context {
+                        requests: &state.requests,
+                        responses: &responses,
+                    };
+                    if check_condition(condition, &ctx).is_ok() {
+                        break record;
+                    }
+                    if attempt >= max_attempts {
+                        until_error = Some(anyhow::anyhow!(
+                            "error: condition '{}' not met after {} attempt(s)",
+                            condition,
+                            max_attempts
+                        ));
+                        break record;
+                    }
+                    "condition not met"
+                } else if record.status >= 500 && attempt < max_attempts {
+                    "server error"
+                } else {
+                    break record;
+                }
+            }
+            Err(e) => {
+                if attempt >= max_attempts {
+                    return Err(e);
+                }
+                "network error"
+            }
+        };
+        attempt += 1;
+        eprintln!(
+            "{}; retrying in {}s (attempt {}/{})",
+            reason, flags.delay_secs, attempt, max_attempts
+        );
+        std::thread::sleep(std::time::Duration::from_secs(flags.delay_secs));
+    };
     if let Some((host, path, _)) = url_parts(request.url.as_deref()) {
         for raw in &record.set_cookies {
             if let Some(update) = parse_set_cookie(raw, &host, &path) {
@@ -66,6 +121,9 @@ fn execute_and_record(
     print!("{}", last.body);
     if !last.body.ends_with('\n') {
         println!();
+    }
+    if let Some(e) = until_error {
+        return Err(e);
     }
     if flags.fail_on_error && last.status >= 400 {
         bail!("error: request failed with status {}", last.status);
