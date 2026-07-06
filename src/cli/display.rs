@@ -1,7 +1,27 @@
+use std::io::IsTerminal;
+
 use crate::model::{Request, ResponseRecord, State, status_reason};
 use crate::session::SessionStore;
 
 use super::commands::{ResponseTarget, ResponseView};
+
+// Print a response body to stdout. On a terminal, valid JSON is pretty-printed
+// for readability; when piped, the raw bytes are written untouched so
+// `reel send | jq .` sees exactly what the server sent. `pad_newline` appends
+// a trailing newline in the raw path when the body lacks one (send/then
+// output; `response body` stays byte-exact).
+pub(super) fn print_body(body: &str, pad_newline: bool) {
+    if std::io::stdout().is_terminal()
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(body)
+    {
+        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        return;
+    }
+    print!("{}", body);
+    if pad_newline && !body.ends_with('\n') {
+        println!();
+    }
+}
 
 pub(super) fn format_status(code: u16) -> String {
     match status_reason(code) {
@@ -27,7 +47,7 @@ fn response_display_value(r: &ResponseRecord) -> serde_json::Value {
 
 fn show_single(r: &ResponseRecord, view: &ResponseView) {
     match view {
-        ResponseView::Body => print!("{}", r.body),
+        ResponseView::Body => print_body(&r.body, false),
         ResponseView::Headers => {
             println!("{} — {}", r.status, source_label(r));
             for (k, v) in r.headers.sorted() {
@@ -99,7 +119,7 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
                         let label = source_label(r);
                         eprintln!("[{}] {}", i + 1, label);
                     }
-                    print!("{}", r.body);
+                    print_body(&r.body, false);
                     if i + 1 < state.responses.len() {
                         println!();
                     }

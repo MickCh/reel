@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `body @<PATH>` reads the request body from a file and `body -` from stdin (both verbatim); `@@` escapes a literal body starting with `@`.
 - Verb shortcuts: `reel get <URL>` (and `post`/`put`/`patch`/`delete`/`head`/`options`) sets the method and URL and sends in one word. The implied send runs after all other commands (so trailing `body`/`header` still apply) and before any `expect`; it is skipped when an explicit `send`/`then` is present.
 - `curl` command: prints the current request (session cookies included) as an equivalent shell-quoted `curl` command on stdout.
+- JSON response bodies are pretty-printed when stdout is a terminal (`send`/`then` output and `response body`). Piped or redirected output is unchanged: raw bytes, exactly as received.
 
 ## [0.1.1] - 2026-07-03
 

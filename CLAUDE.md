@@ -237,5 +237,6 @@ Likely next additions and where to put them. Implement only when explicitly requ
 - No async runtime. `reqwest::blocking` is deliberate — a CLI tool doesn't benefit from async.
 - No `clap`. The positional key-value syntax is the UX; a flag-based parser would break it.
 - Status on stderr, body on stdout. Do not change this — it enables `reel send | jq .`.
+- Body output goes through `print_body` in `cli/display.rs`: pretty-printed JSON on a TTY, raw bytes when piped. The piped path must stay byte-exact (`response body` adds no trailing newline; `send`/`then` pad a missing final newline as before).
 - `session.save()` inside the shared `send`/`then` execution path (`execute_and_record` in `cli/runner.rs`) must come before any stdout write — broken-pipe safety.
 - `parse_args` must stay pure (no I/O). All I/O belongs in `run_commands` via the injected traits.

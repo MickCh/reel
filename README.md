@@ -383,6 +383,7 @@ Details:
 
 - Response status is written to **stderr** (`200 OK`)
 - Response body is written to **stdout**
+- When stdout is a terminal, a JSON body is pretty-printed for readability; when piped or redirected, the raw bytes are written untouched — `reel send | jq .` sees exactly what the server sent
 - `show`, confirmations (`Request loaded from: …`, `Session cleared.`), and all diagnostic messages go to **stderr**
 - `response headers` writes headers to **stdout** (it is data, not a status message)
 
