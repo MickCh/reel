@@ -14,6 +14,8 @@ The name comes from a film reel: each request is a frame, and the session thread
 
 `reel` keeps the request state between calls in the same terminal, so you can set headers once, tweak the URL or body, and keep sending without rebuilding the full command.
 
+That persistence also makes it a natural fit for multi-step API work: a session-scoped [cookie jar](#cookies) keeps you logged in, [`then`](#chaining-requests-with-then) chains dependent requests with `${{ }}` templating, [`expect`](#assertions-with-expect) asserts on responses for CI, and [`--retry`/`--until`](#retrying-and-polling) tolerate flaky or asynchronous endpoints.
+
 ## How sessions work
 
 Each terminal window runs its own shell process. `reel` uses the parent shell's PID as a session key, storing state in `~/.reel/sessions/<ppid>.json`. This means:
@@ -414,17 +416,21 @@ Sessions are stored as plain JSON and can be edited or version-controlled:
   "responses": [
     {
       "status": 201,
+      "elapsed_ms": 142,
       "headers": {
         "content-type": "application/json",
         "content-length": "42"
       },
       "body": "{\"id\": 1, \"name\": \"Alice\"}"
     }
+  ],
+  "cookies": [
+    { "name": "session", "value": "abc123", "domain": "api.example.com", "path": "/" }
   ]
 }
 ```
 
-The `responses` array is written automatically after each `send` and can be omitted when creating preset files — it will be populated on first use. PID-keyed session files also carry an `owner_start_time` field identifying the owning shell; it is ignored in preset files.
+The `responses` array is written automatically after each `send` (each record carries its `elapsed_ms` duration) and can be omitted when creating preset files — it will be populated on first use. The `cookies` array is the session's cookie jar, populated from `Set-Cookie` responses; it is never written to preset files. PID-keyed session files also carry an `owner_start_time` field identifying the owning shell; it is ignored in preset files.
 
 > **Note:** Session files and preset files store credentials (e.g. `Authorization` headers) in plaintext (session files are created with `0600` permissions on Unix). Avoid committing preset files that contain real tokens to version control.
 
@@ -433,3 +439,5 @@ The `responses` array is written automatically after each `send` and can be omit
 - [reqwest](https://github.com/seanmonstar/reqwest) — HTTP client
 - [serde](https://serde.rs/) / [serde_json](https://github.com/serde-rs/json) — JSON serialization
 - [dirs](https://github.com/dirs-dev/dirs-rs) — home directory lookup
+- [url](https://github.com/servo/rust-url) — host/path extraction for cookie scoping
+- [uuid](https://github.com/uuid-rs/uuid) — `${{ uuid() }}` template function

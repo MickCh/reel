@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-06
+
 ### Added
 
 - Cookie jar: cookies from `Set-Cookie` response headers are stored in the session and sent automatically on matching requests (domain, path, and `Secure` scoping; `Max-Age=0` deletes). A manually set `Cookie` header always wins. Cookies are shown by `show` and cleared by `reset`.
@@ -47,6 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Cross-platform PPID-based session isolation: Linux/macOS/BSD via `libc::getppid()`, Windows via `CreateToolhelp32Snapshot`
 - CI on Linux, macOS, and Windows via GitHub Actions
 
-[Unreleased]: https://github.com/MickCh/reel/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/MickCh/reel/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/MickCh/reel/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/MickCh/reel/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/MickCh/reel/releases/tag/v0.1.0
