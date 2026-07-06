@@ -12,6 +12,7 @@ Modules under `src/`:
 |---|---|
 | `main.rs` | Entry point — wires modules together |
 | `model/mod.rs` | `Headers`, `Request`, `ResponseRecord`, `State` structs (pure data, no I/O); `status_reason` lookup table |
+| `model/cookies.rs` | `Cookie` struct, `Set-Cookie` parsing, domain/path matching, jar update — pure functions, no I/O |
 | `session/mod.rs` | `SessionStore` + `PresetStore` traits with `FileSessionStore`/`FilePresetStore` impls; `cleanup_old_sessions` free function |
 | `template/mod.rs` | Template interpolation engine (`${{ expr }}`) |
 | `http.rs` | `HttpClient` trait + `ReqwestClient` impl |
@@ -97,6 +98,7 @@ struct State {
     request:   Request,            // #[serde(flatten)] — session files keep their flat shape
     requests:  Vec<Request>,       // populated by send/then, never set by the user
     responses: Vec<ResponseRecord>,// populated by send/then, never set by the user
+    cookies:   Vec<Cookie>,        // cookie jar — populated from Set-Cookie responses
 }
 
 struct ResponseRecord {
@@ -104,6 +106,16 @@ struct ResponseRecord {
     status:  u16,
     headers: Headers,
     body:    String,
+    set_cookies: Vec<String>,  // raw Set-Cookie values (can't be ", "-joined into headers)
+}
+
+struct Cookie {                // model/cookies.rs — simplified RFC 6265
+    name:      String,
+    value:     String,
+    domain:    String,         // lowercase; request host unless a Domain attribute widened it
+    path:      String,
+    secure:    bool,           // only sent over https
+    host_only: bool,           // no Domain attribute: exact-host match only
 }
 ```
 
@@ -125,6 +137,8 @@ All case-insensitive header semantics (lookup, insert dedup, removal) live in `H
    - `then <PATH>` — replaces `state.request` from a preset file (history stays in place), applies template interpolation against the full request/response history (plus environment variables), executes via `http.execute()`, and appends the interpolated request snapshot and response to `state.requests`/`state.responses`; aborts the whole chain on failure. Interpolation runs unconditionally; a placeholder that references missing history (e.g. `${{ body }}` with no previous response) or a missing env var aborts the chain with an error. Env-only presets (`${{ env.* }}`) work even with no prior response.
 
    The shared execution path of `send`/`then` (execute → record history → `session.save()` → print → honour `fail`) lives in the `execute_and_record` helper in `cli/runner.rs`. The "body set but Content-Type missing" warning is also emitted there, not in the HTTP layer.
+
+   **Cookie jar.** `execute_and_record` sends the request through `with_session_cookies`: matching cookies from `state.cookies` are assembled into a `Cookie` header (a user-set `Cookie` header always wins; the history snapshot records the header as actually sent). After the response, raw `Set-Cookie` values from `ResponseRecord.set_cookies` are parsed into the jar (`model/cookies.rs`): same `(name, domain, path)` replaces, `Max-Age <= 0` deletes, a `Domain` attribute that is not a suffix of the request host is rejected. Matching is simplified RFC 6265 (domain + path + `Secure`); `Expires`/`Max-Age` lifetimes are not tracked — cookies live until `reset` or deletion by the server. The jar survives `send` (which only clears `requests`/`responses`) and is persisted in the session file; presets never contain it. Cookie handling is skipped entirely when the URL cannot be parsed (`url_parts` in `cli/runner.rs`).
    - `--dry-run` (GlobalFlag) — `send`/`then` print the request details (method, URL, headers, body) to stderr and skip the HTTP call, history recording, and their own `session.save()`. Mutations made by other commands (`method`, `url`, `header`, `load`, …) still occur and are persisted by the end-of-run save; a dry-run `then` interpolates the preset into `state.request` in memory but does not itself mark the session as modified
    - `fail` (GlobalFlag) — after all commands complete, exits with code 1 if any `send` or `then` received a 4xx or 5xx response
 4. If any mutation occurred without a following `send`/`then`, `session.save()` is called at end
@@ -181,6 +195,7 @@ The `response` command peeks at the next token(s) to consume an optional `all`/i
 | `reqwest` (blocking) | HTTP client; blocking avoids async complexity for a CLI |
 | `serde` + `serde_json` | State serialization |
 | `dirs` | Cross-platform home directory |
+| `url` | Host/path extraction from the request URL for cookie scoping (already in the tree via reqwest) |
 | `libc` (Unix only) | PPID lookup via `getppid()`; process liveness via `kill(pid, 0)` |
 | `windows-sys` (Windows only) | PPID lookup via `CreateToolhelp32Snapshot`; process start time / liveness via `OpenProcess`, `GetProcessTimes`, `GetExitCodeProcess` |
 

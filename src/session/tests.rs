@@ -251,10 +251,9 @@ fn save_preset_stores_only_request_fields() {
     let mut state = State::default();
     state.request.url = Some("https://example.com".to_string());
     state.responses.push(crate::model::ResponseRecord {
-        source: None,
         status: 200,
-        headers: Default::default(),
         body: "body".to_string(),
+        ..Default::default()
     });
 
     let presets = FilePresetStore;

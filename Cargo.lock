@@ -840,6 +840,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "url",
  "windows-sys 0.61.2",
 ]
 

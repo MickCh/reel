@@ -1,3 +1,4 @@
+use super::cookies::SetCookie;
 use super::*;
 
 // --- Headers ---
@@ -168,6 +169,7 @@ fn response_record_round_trips() {
         status: 200,
         headers,
         body: "ok".to_string(),
+        ..Default::default()
     };
     let json = serde_json::to_string(&r).unwrap();
     let restored: ResponseRecord = serde_json::from_str(&json).unwrap();
@@ -183,10 +185,9 @@ fn response_record_round_trips() {
 #[test]
 fn response_record_without_source_omits_field() {
     let r = ResponseRecord {
-        source: None,
         status: 404,
-        headers: Headers::default(),
         body: "not found".to_string(),
+        ..Default::default()
     };
     let json = serde_json::to_string(&r).unwrap();
     assert!(!json.contains("source"));
@@ -208,4 +209,174 @@ fn status_reason_known_codes() {
 fn status_reason_unknown_code_is_none() {
     assert_eq!(status_reason(299), None);
     assert_eq!(status_reason(999), None);
+}
+
+// --- cookies ---
+
+fn set(update: Option<SetCookie>) -> Cookie {
+    match update {
+        Some(SetCookie::Set(c)) => c,
+        _ => panic!("expected SetCookie::Set"),
+    }
+}
+
+#[test]
+fn parse_set_cookie_basic() {
+    let c = set(parse_set_cookie("session=abc123", "example.com", "/login"));
+    assert_eq!(c.name, "session");
+    assert_eq!(c.value, "abc123");
+    assert_eq!(c.domain, "example.com");
+    assert!(c.host_only);
+    assert!(!c.secure);
+}
+
+#[test]
+fn parse_set_cookie_default_path_is_request_directory() {
+    let c = set(parse_set_cookie("a=1", "example.com", "/api/v1/login"));
+    assert_eq!(c.path, "/api/v1");
+    let c = set(parse_set_cookie("a=1", "example.com", "/login"));
+    assert_eq!(c.path, "/");
+    let c = set(parse_set_cookie("a=1", "example.com", "/"));
+    assert_eq!(c.path, "/");
+}
+
+#[test]
+fn parse_set_cookie_attributes() {
+    let c = set(parse_set_cookie(
+        "sid=x; Domain=.example.com; Path=/api; Secure; HttpOnly",
+        "www.example.com",
+        "/",
+    ));
+    assert_eq!(c.domain, "example.com");
+    assert!(!c.host_only);
+    assert_eq!(c.path, "/api");
+    assert!(c.secure);
+}
+
+#[test]
+fn parse_set_cookie_rejects_unrelated_domain() {
+    assert!(parse_set_cookie("sid=x; Domain=evil.com", "example.com", "/").is_none());
+    // Suffix without a dot boundary is not a subdomain.
+    assert!(parse_set_cookie("sid=x; Domain=ample.com", "example.com", "/").is_none());
+}
+
+#[test]
+fn parse_set_cookie_max_age_zero_is_delete() {
+    match parse_set_cookie("sid=; Path=/; Max-Age=0", "example.com", "/") {
+        Some(SetCookie::Delete { name, domain, path }) => {
+            assert_eq!(name, "sid");
+            assert_eq!(domain, "example.com");
+            assert_eq!(path, "/");
+        }
+        _ => panic!("expected SetCookie::Delete"),
+    }
+}
+
+#[test]
+fn parse_set_cookie_malformed_is_none() {
+    assert!(parse_set_cookie("no-equals-sign", "example.com", "/").is_none());
+    assert!(parse_set_cookie("=value-only", "example.com", "/").is_none());
+}
+
+#[test]
+fn cookie_domain_matching() {
+    let host_only = set(parse_set_cookie("a=1; Path=/", "example.com", "/"));
+    assert!(host_only.matches("example.com", "/", true));
+    assert!(!host_only.matches("www.example.com", "/", true));
+
+    let domain_wide = set(parse_set_cookie(
+        "a=1; Path=/; Domain=example.com",
+        "example.com",
+        "/",
+    ));
+    assert!(domain_wide.matches("example.com", "/", true));
+    assert!(domain_wide.matches("api.example.com", "/", true));
+    assert!(!domain_wide.matches("notexample.com", "/", true));
+}
+
+#[test]
+fn cookie_path_matching() {
+    let c = set(parse_set_cookie("a=1; Path=/api", "example.com", "/"));
+    assert!(c.matches("example.com", "/api", true));
+    assert!(c.matches("example.com", "/api/users", true));
+    assert!(!c.matches("example.com", "/apiary", true));
+    assert!(!c.matches("example.com", "/", true));
+}
+
+#[test]
+fn secure_cookie_requires_https() {
+    let c = set(parse_set_cookie("a=1; Path=/; Secure", "example.com", "/"));
+    assert!(c.matches("example.com", "/", true));
+    assert!(!c.matches("example.com", "/", false));
+}
+
+#[test]
+fn update_jar_replaces_and_deletes() {
+    let mut jar = Vec::new();
+    update_jar(
+        &mut jar,
+        parse_set_cookie("sid=old; Path=/", "example.com", "/").unwrap(),
+    );
+    update_jar(
+        &mut jar,
+        parse_set_cookie("sid=new; Path=/", "example.com", "/").unwrap(),
+    );
+    assert_eq!(jar.len(), 1);
+    assert_eq!(jar[0].value, "new");
+
+    update_jar(
+        &mut jar,
+        parse_set_cookie("sid=; Path=/; Max-Age=0", "example.com", "/").unwrap(),
+    );
+    assert!(jar.is_empty());
+}
+
+#[test]
+fn cookie_header_joins_matching_cookies() {
+    let mut jar = Vec::new();
+    update_jar(
+        &mut jar,
+        parse_set_cookie("b=2; Path=/", "example.com", "/").unwrap(),
+    );
+    update_jar(
+        &mut jar,
+        parse_set_cookie("a=1; Path=/api", "example.com", "/").unwrap(),
+    );
+    update_jar(
+        &mut jar,
+        parse_set_cookie("c=3; Path=/", "other.com", "/").unwrap(),
+    );
+    // Longest path first; the other.com cookie does not match.
+    assert_eq!(
+        cookie_header(&jar, "example.com", "/api/x", true).as_deref(),
+        Some("a=1; b=2")
+    );
+    assert_eq!(
+        cookie_header(&jar, "example.com", "/", true).as_deref(),
+        Some("b=2")
+    );
+    assert_eq!(cookie_header(&jar, "unrelated.com", "/", true), None);
+}
+
+#[test]
+fn state_with_cookies_round_trips() {
+    let mut state = State::default();
+    state.cookies.push(Cookie {
+        name: "sid".to_string(),
+        value: "abc".to_string(),
+        domain: "example.com".to_string(),
+        path: "/".to_string(),
+        secure: true,
+        host_only: true,
+    });
+    let json = serde_json::to_string(&state).unwrap();
+    let restored: State = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.cookies, state.cookies);
+}
+
+#[test]
+fn state_without_cookies_omits_field() {
+    let state = State::default();
+    let json = serde_json::to_string(&state).unwrap();
+    assert!(!json.contains("cookies"));
 }

@@ -2,13 +2,13 @@ use super::*;
 
 fn record(status: u16, body: &str, headers: &[(&str, &str)]) -> ResponseRecord {
     ResponseRecord {
-        source: None,
         status,
         headers: headers
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
         body: body.to_string(),
+        ..Default::default()
     }
 }
 

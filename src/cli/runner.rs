@@ -1,12 +1,34 @@
 use anyhow::{Result, bail};
 
 use crate::http::HttpClient;
-use crate::model::State;
+use crate::model::{Cookie, Request, State, cookie_header, parse_set_cookie, update_jar};
 use crate::session::{PresetStore, SessionStore};
 use crate::template::{Context, apply_interpolation};
 
 use super::commands::{Command, GlobalFlags, ParseResult, ResponseTarget, ResponseView};
 use super::display::{format_status, print_dry_run};
+
+// Host, path, and https-ness of the request URL — the context needed for
+// cookie matching. None when the URL is unset or unparseable (in which case
+// cookie handling is skipped; the HTTP layer reports the bad URL itself).
+fn url_parts(url: Option<&str>) -> Option<(String, String, bool)> {
+    let parsed = url::Url::parse(url?).ok()?;
+    let host = parsed.host_str()?.to_lowercase();
+    Some((host, parsed.path().to_string(), parsed.scheme() == "https"))
+}
+
+// The request as it will actually be sent: the user's request plus the Cookie
+// header assembled from the session jar. A user-set Cookie header always wins.
+fn with_session_cookies(request: &Request, jar: &[Cookie]) -> Request {
+    let mut request = request.clone();
+    if request.headers.get("cookie").is_none()
+        && let Some((host, path, https)) = url_parts(request.url.as_deref())
+        && let Some(header) = cookie_header(jar, &host, &path, https)
+    {
+        request.headers.insert("Cookie".to_string(), header);
+    }
+    request
+}
 
 // Shared execution path of `send` and `then`: run the request, record it in
 // the history, persist the session, print the result, and honour `fail`.
@@ -23,8 +45,16 @@ fn execute_and_record(
         eprintln!("warning: body is set but Content-Type header is missing");
     }
 
-    let record = http.execute(&state.request, source)?;
-    state.requests.push(state.request.clone());
+    let request = with_session_cookies(&state.request, &state.cookies);
+    let record = http.execute(&request, source)?;
+    if let Some((host, path, _)) = url_parts(request.url.as_deref()) {
+        for raw in &record.set_cookies {
+            if let Some(update) = parse_set_cookie(raw, &host, &path) {
+                update_jar(&mut state.cookies, update);
+            }
+        }
+    }
+    state.requests.push(request);
     state.responses.push(record);
     session.save(state)?;
 
@@ -59,7 +89,7 @@ pub fn run_commands(
         match cmd {
             Command::Send => {
                 if flags.dry_run {
-                    print_dry_run(&state.request);
+                    print_dry_run(&with_session_cookies(&state.request, &state.cookies));
                     continue;
                 }
                 let had_responses = !state.responses.is_empty();
@@ -88,7 +118,7 @@ pub fn run_commands(
 
                 if flags.dry_run {
                     eprintln!("(dry-run: {})", path_str);
-                    print_dry_run(&state.request);
+                    print_dry_run(&with_session_cookies(&state.request, &state.cookies));
                     continue;
                 }
 

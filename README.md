@@ -291,6 +291,22 @@ API_TOKEN=sk-live-... reel load create.json send then confirm.json
 
 If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index, or unset environment variable) the chain aborts immediately with an error.
 
+## Cookies
+
+`reel` keeps a cookie jar in the session. Cookies from `Set-Cookie` response headers are stored automatically and sent back on subsequent requests that match the cookie's domain, path, and `Secure` attribute — so a login endpoint that sets a session cookie "just works":
+
+```bash
+reel method POST url https://example.com/login body '{"user":"alice"}' send
+reel url https://example.com/profile send    # session cookie sent automatically
+```
+
+Details:
+
+- A `Cookie` header you set manually (`reel header Cookie ...`) always wins over the jar.
+- The jar survives `send` (which only clears the response history) and is cleared by `reset` or when the server expires a cookie (`Max-Age=0`).
+- Cookie lifetimes (`Expires`/`Max-Age`) are not tracked otherwise — a cookie lives as long as the session.
+- Cookies are visible in `reel show` and stored in the session file (plaintext — same caveat as headers).
+
 ## Output
 
 - Response status is written to **stderr** (`200 OK`)

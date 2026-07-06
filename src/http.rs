@@ -53,6 +53,15 @@ impl HttpClient for ReqwestClient {
         })?;
         let status = resp.status();
 
+        // Set-Cookie values are kept as a raw list — they cannot be joined
+        // with ", " like other headers (Expires dates contain commas).
+        let set_cookies: Vec<String> = resp
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_string))
+            .collect();
+
         // Duplicate header names are joined with ", " per RFC 7230.
         let mut resp_headers: HashMap<String, String> = HashMap::new();
         for (k, v) in resp.headers().iter() {
@@ -76,6 +85,7 @@ impl HttpClient for ReqwestClient {
             status: status.as_u16(),
             headers: resp_headers.into(),
             body,
+            set_cookies,
         })
     }
 }

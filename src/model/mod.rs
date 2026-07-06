@@ -2,6 +2,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+mod cookies;
+pub use cookies::{Cookie, cookie_header, parse_set_cookie, update_jar};
+
 mod body_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use serde_json::Value;
@@ -119,6 +122,10 @@ pub struct ResponseRecord {
     pub status: u16,
     pub headers: Headers,
     pub body: String,
+    // Raw Set-Cookie header values, kept separate from `headers` because
+    // joining them with ", " would be ambiguous (Expires dates contain commas).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub set_cookies: Vec<String>,
 }
 
 // A session: the request currently being built plus the request/response
@@ -132,6 +139,11 @@ pub struct State {
     pub requests: Vec<Request>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub responses: Vec<ResponseRecord>,
+    // Cookie jar: captured from Set-Cookie responses by send/then, sent back
+    // automatically on matching requests. Unlike `requests`/`responses` it
+    // survives `send` (which only clears the history).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub cookies: Vec<Cookie>,
 }
 
 // Canonical reason phrase for an HTTP status code (e.g. 200 → "OK").

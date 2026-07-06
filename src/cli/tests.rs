@@ -11,27 +11,39 @@ use std::path::{Path, PathBuf};
 
 struct MockHttp {
     response: Result<ResponseRecord, ()>,
+    seen: RefCell<Vec<Request>>,
 }
 
 impl MockHttp {
     fn ok(status: u16) -> Self {
         Self {
             response: Ok(ResponseRecord {
-                source: None,
                 status,
-                headers: Default::default(),
                 body: "{}".to_string(),
+                ..Default::default()
             }),
+            seen: RefCell::new(Vec::new()),
         }
     }
 
     fn err() -> Self {
-        Self { response: Err(()) }
+        Self {
+            response: Err(()),
+            seen: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn with_set_cookies(mut self, cookies: &[&str]) -> Self {
+        if let Ok(r) = &mut self.response {
+            r.set_cookies = cookies.iter().map(|s| s.to_string()).collect();
+        }
+        self
     }
 }
 
 impl HttpClient for MockHttp {
-    fn execute(&self, _request: &Request, source: Option<&str>) -> anyhow::Result<ResponseRecord> {
+    fn execute(&self, request: &Request, source: Option<&str>) -> anyhow::Result<ResponseRecord> {
+        self.seen.borrow_mut().push(request.clone());
         self.response
             .clone()
             .map(|mut r| {
@@ -477,16 +489,14 @@ fn send_clears_previous_responses() {
     state.request.url = Some("https://example.com".to_string());
     // Pre-load two fake responses
     state.responses.push(ResponseRecord {
-        source: None,
         status: 200,
-        headers: Default::default(),
         body: "old".to_string(),
+        ..Default::default()
     });
     state.responses.push(ResponseRecord {
-        source: None,
         status: 200,
-        headers: Default::default(),
         body: "old2".to_string(),
+        ..Default::default()
     });
 
     run("send", &mut state, &http, &session).unwrap();
@@ -616,10 +626,9 @@ fn then_interpolates_from_previous_response() {
     );
     let mut state = State::default();
     state.responses.push(ResponseRecord {
-        source: None,
         status: 200,
-        headers: Default::default(),
         body: r#"{"token":"abc"}"#.to_string(),
+        ..Default::default()
     });
 
     run_with_presets("then step2.json", &mut state, &http, &session, &presets).unwrap();
@@ -653,4 +662,125 @@ fn then_missing_preset_is_error() {
     let mut state = State::default();
 
     assert!(run("then missing.json", &mut state, &http, &session).is_err());
+}
+
+// --- cookie jar ---
+
+fn jar_cookie(name: &str, value: &str, domain: &str) -> crate::model::Cookie {
+    crate::model::Cookie {
+        name: name.to_string(),
+        value: value.to_string(),
+        domain: domain.to_string(),
+        path: "/".to_string(),
+        secure: false,
+        host_only: true,
+    }
+}
+
+#[test]
+fn send_stores_cookies_from_response() {
+    let http = MockHttp::ok(200).with_set_cookies(&["session=abc; Path=/"]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/login".to_string());
+
+    run("send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.cookies.len(), 1);
+    assert_eq!(state.cookies[0].name, "session");
+    assert_eq!(state.cookies[0].value, "abc");
+    assert_eq!(state.cookies[0].domain, "example.com");
+    // The jar is part of the persisted session.
+    assert_eq!(
+        session.last_saved.borrow().as_ref().unwrap().cookies.len(),
+        1
+    );
+}
+
+#[test]
+fn send_includes_cookie_header_from_jar() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/data".to_string());
+    state
+        .cookies
+        .push(jar_cookie("session", "abc", "example.com"));
+
+    run("send", &mut state, &http, &session).unwrap();
+
+    let seen = http.seen.borrow();
+    assert_eq!(seen[0].headers.get("Cookie"), Some("session=abc"));
+    // The history snapshot reflects the request as actually sent.
+    assert_eq!(state.requests[0].headers.get("Cookie"), Some("session=abc"));
+}
+
+#[test]
+fn user_cookie_header_wins_over_jar() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/".to_string());
+    state
+        .request
+        .headers
+        .insert("Cookie".to_string(), "mine=1".to_string());
+    state
+        .cookies
+        .push(jar_cookie("session", "abc", "example.com"));
+
+    run("send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(http.seen.borrow()[0].headers.get("cookie"), Some("mine=1"));
+}
+
+#[test]
+fn cookie_not_sent_to_other_domain() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://other.example/".to_string());
+    state
+        .cookies
+        .push(jar_cookie("session", "abc", "example.com"));
+
+    run("send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(http.seen.borrow()[0].headers.get("cookie"), None);
+}
+
+#[test]
+fn max_age_zero_removes_cookie_from_jar() {
+    let http = MockHttp::ok(200).with_set_cookies(&["session=; Path=/; Max-Age=0"]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/logout".to_string());
+    state
+        .cookies
+        .push(jar_cookie("session", "abc", "example.com"));
+
+    run("send", &mut state, &http, &session).unwrap();
+
+    assert!(state.cookies.is_empty());
+}
+
+#[test]
+fn send_keeps_jar_but_clears_history() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/".to_string());
+    state
+        .cookies
+        .push(jar_cookie("session", "abc", "example.com"));
+    state.responses.push(ResponseRecord {
+        status: 200,
+        body: "old".to_string(),
+        ..Default::default()
+    });
+
+    run("send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.responses.len(), 1);
+    assert_eq!(state.cookies.len(), 1);
 }

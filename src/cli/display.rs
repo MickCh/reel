@@ -62,6 +62,9 @@ pub fn show_state(state: &State, session: &dyn SessionStore) {
             .unwrap_or_else(|_| body.clone());
         eprintln!("  body    {}", formatted.replace('\n', "\n          "));
     }
+    for c in &state.cookies {
+        eprintln!("  cookie  {}={}  ({}{})", c.name, c.value, c.domain, c.path);
+    }
     if !state.responses.is_empty() {
         eprintln!("  responses  {} stored", state.responses.len());
     }
@@ -175,6 +178,13 @@ pub fn print_usage() {
     eprintln!("  reel send then step2.json then step3.json");
     eprintln!("  reel response all");
     eprintln!("  reel fail send  # exits 1 on 4xx/5xx");
+    eprintln!();
+    eprintln!(
+        "Cookies: Set-Cookie responses are stored in the session and sent back automatically"
+    );
+    eprintln!(
+        "         on matching requests. A manually set Cookie header always takes precedence."
+    );
     eprintln!();
     eprintln!(
         "Note: status messages and confirmations are written to stderr; response body goes to stdout."

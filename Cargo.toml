@@ -22,6 +22,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.13", features = ["blocking"] }
 dirs = "6"
+# url is already in the tree via reqwest; used directly for cookie scoping
+# (host/path extraction from the request URL).
+url = "2"
 
 # libc is used for PPID lookup via getppid() and process liveness via
 # kill(pid, 0) on Unix (Linux, macOS, BSD).
