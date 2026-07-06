@@ -3,7 +3,7 @@ use anyhow::{Result, bail};
 use crate::http::HttpClient;
 use crate::model::{Cookie, Request, State, cookie_header, parse_set_cookie, update_jar};
 use crate::session::{PresetStore, SessionStore};
-use crate::template::{Context, apply_interpolation};
+use crate::template::{Context, apply_interpolation, check_condition};
 
 use super::commands::{Command, GlobalFlags, ParseResult, ResponseTarget, ResponseView};
 use super::display::{format_status, print_dry_run};
@@ -124,6 +124,18 @@ pub fn run_commands(
 
                 execute_and_record(state, flags, http, session, Some(&path_str), None)?;
                 modified = false;
+            }
+            Command::Expect(condition) => {
+                if flags.dry_run {
+                    eprintln!("(dry-run: skipping expect {})", condition);
+                    continue;
+                }
+                let ctx = Context {
+                    requests: &state.requests,
+                    responses: &state.responses,
+                };
+                check_condition(&condition, &ctx).map_err(|e| anyhow::anyhow!("error: {}", e))?;
+                eprintln!("expect ok: {}", condition);
             }
             Command::Show => {
                 do_show = true;

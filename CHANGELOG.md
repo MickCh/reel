@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Cookie jar: cookies from `Set-Cookie` response headers are stored in the session and sent automatically on matching requests (domain, path, and `Secure` scoping; `Max-Age=0` deletes). A manually set `Cookie` header always wins. Cookies are shown by `show` and cleared by `reset`.
+- `expect <CONDITION>` command: assert on the response history (`status == 200`, `body.token`, `headers.content-type contains json`, …) using template expressions; a failing assertion aborts the chain with exit code 1.
 
 ## [0.1.1] - 2026-07-03
 

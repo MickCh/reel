@@ -664,6 +664,101 @@ fn then_missing_preset_is_error() {
     assert!(run("then missing.json", &mut state, &http, &session).is_err());
 }
 
+// --- expect ---
+
+#[test]
+fn parse_expect() {
+    let (cmds, _) = parse_args(&[s("expect"), s("status == 200")]).unwrap();
+    assert!(matches!(&cmds[0], Command::Expect(c) if c == "status == 200"));
+}
+
+#[test]
+fn parse_expect_missing_condition_is_error() {
+    assert!(parse_args(&args("expect")).is_err());
+}
+
+#[test]
+fn expect_passes_after_send() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    let (cmds, flags) = parse_args(&[s("send"), s("expect"), s("status == 200")]).unwrap();
+    run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn expect_failure_aborts_chain() {
+    let http = MockHttp::ok(500);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    // The failing expect must stop the second send from running.
+    let (cmds, flags) =
+        parse_args(&[s("send"), s("expect"), s("status == 200"), s("send")]).unwrap();
+    let err = run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("expect failed"), "{err}");
+    assert_eq!(http.seen.borrow().len(), 1);
+}
+
+#[test]
+fn expect_without_response_is_error() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    let (cmds, flags) = parse_args(&[s("expect"), s("status == 200")]).unwrap();
+    assert!(
+        run_commands(
+            cmds,
+            &flags,
+            &mut state,
+            &http,
+            &session,
+            &MockPresets::default(),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn dry_run_skips_expect() {
+    let http = MockHttp::err();
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    let (cmds, flags) =
+        parse_args(&[s("--dry-run"), s("send"), s("expect"), s("status == 200")]).unwrap();
+    run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+}
+
 // --- cookie jar ---
 
 fn jar_cookie(name: &str, value: &str, domain: &str) -> crate::model::Cookie {

@@ -321,3 +321,95 @@ fn request_unknown_field_is_error() {
     let rq = request("GET", "https://x", None, &[]);
     assert!(interp_full("${{ request.bogus }}", &[rq], &[]).is_err());
 }
+
+// --- check_condition ---
+
+#[test]
+fn condition_existence_passes_when_resolvable() {
+    let responses = [record(200, r#"{"token":"abc"}"#, &[])];
+    let ctx = Context {
+        requests: &[],
+        responses: &responses,
+    };
+    assert!(check_condition("body.token", &ctx).is_ok());
+    assert!(check_condition("status", &ctx).is_ok());
+}
+
+#[test]
+fn condition_existence_fails_when_missing() {
+    let responses = [record(200, r#"{"token":"abc"}"#, &[])];
+    let ctx = Context {
+        requests: &[],
+        responses: &responses,
+    };
+    assert!(check_condition("body.missing", &ctx).is_err());
+}
+
+#[test]
+fn condition_equality() {
+    let responses = [record(201, r#"{"id":42}"#, &[])];
+    let ctx = Context {
+        requests: &[],
+        responses: &responses,
+    };
+    assert!(check_condition("status == 201", &ctx).is_ok());
+    assert!(check_condition("body.id == 42", &ctx).is_ok());
+    let err = check_condition("status == 200", &ctx)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("actual: 201"), "{err}");
+}
+
+#[test]
+fn condition_inequality() {
+    let responses = [record(200, "{}", &[])];
+    let ctx = Context {
+        requests: &[],
+        responses: &responses,
+    };
+    assert!(check_condition("status != 404", &ctx).is_ok());
+    assert!(check_condition("status != 200", &ctx).is_err());
+}
+
+#[test]
+fn condition_contains() {
+    let responses = [record(200, r#"{"msg":"hello world"}"#, &[])];
+    let ctx = Context {
+        requests: &[],
+        responses: &responses,
+    };
+    assert!(check_condition("body contains hello", &ctx).is_ok());
+    assert!(check_condition("body.msg contains hello world", &ctx).is_ok());
+    assert!(check_condition("body contains goodbye", &ctx).is_err());
+}
+
+#[test]
+fn condition_unknown_operator_is_error() {
+    let responses = [record(200, "{}", &[])];
+    let ctx = Context {
+        requests: &[],
+        responses: &responses,
+    };
+    let err = check_condition("status >= 200", &ctx)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown expect operator"), "{err}");
+}
+
+#[test]
+fn condition_without_history_is_error() {
+    let ctx = Context {
+        requests: &[],
+        responses: &[],
+    };
+    assert!(check_condition("status == 200", &ctx).is_err());
+}
+
+#[test]
+fn condition_empty_is_error() {
+    let ctx = Context {
+        requests: &[],
+        responses: &[],
+    };
+    assert!(check_condition("  ", &ctx).is_err());
+}

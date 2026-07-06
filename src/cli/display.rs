@@ -139,6 +139,12 @@ pub fn print_usage() {
     eprintln!(
         "  then <PATH>            load next request from file (with template interpolation) and send it"
     );
+    eprintln!(
+        "  expect <CONDITION>     assert on the last response; abort with exit code 1 on failure"
+    );
+    eprintln!(
+        "                         forms: <expr>, <expr> == <v>, <expr> != <v>, <expr> contains <v>"
+    );
     eprintln!("  show                   print the current session state");
     eprintln!(
         "  response [N|all] [body|headers]   show Nth response (1-based, default: last), or all; full JSON, body, or headers"
@@ -178,6 +184,7 @@ pub fn print_usage() {
     eprintln!("  reel send then step2.json then step3.json");
     eprintln!("  reel response all");
     eprintln!("  reel fail send  # exits 1 on 4xx/5xx");
+    eprintln!("  reel send expect 'status == 200' expect 'body.token'");
     eprintln!();
     eprintln!(
         "Cookies: Set-Cookie responses are stored in the session and sent back automatically"

@@ -73,6 +73,7 @@ Commands can be combined freely in a single invocation.
 | `header-rm-all` | Remove all headers |
 | `body <BODY>` | Set request body |
 | `send` | Send the request using current session state |
+| `expect <CONDITION>` | Assert on the last response; abort with exit code 1 on failure |
 | `--dry-run` | Print the request that would be sent, without sending it (position-independent) |
 | `then <PATH>` | Load preset file, interpolate `${{ expr }}` from request/response history and environment, and send |
 | `show` | Print the current session state |
@@ -290,6 +291,19 @@ API_TOKEN=sk-live-... reel load create.json send then confirm.json
 ```
 
 If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index, or unset environment variable) the chain aborts immediately with an error.
+
+### Assertions with `expect`
+
+`expect` turns reel into a lightweight API test runner: it evaluates a condition against the response history and aborts the command chain (exit code 1) when it fails. The condition uses the same expressions as templates, without the `${{ }}` wrapper:
+
+```bash
+reel send expect 'status == 200'
+reel send expect 'body.token'                     # passes if the field exists
+reel send expect 'headers.content-type contains json'
+reel load login.json send expect 'status == 200' then create.json expect 'status == 201'
+```
+
+Supported forms: `<expr>` (must resolve), `<expr> == <value>`, `<expr> != <value>`, `<expr> contains <value>`. Any template expression works, including `response[N].*`, `request.*`, and `env.*`. A failing `expect` stops later commands from running — useful in CI scripts and as a guard before a destructive `then` step.
 
 ## Cookies
 

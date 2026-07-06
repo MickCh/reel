@@ -204,6 +204,49 @@ fn eval_expr(expr: &str, ctx: &Context) -> Result<String> {
     eval_record_expr(expr, record)
 }
 
+// Check an `expect` condition against the session history. Supported forms:
+//
+//   <expr>                     → passes when the expression resolves at all
+//   <expr> == <value>          → string equality (status codes compare as strings)
+//   <expr> != <value>          → string inequality
+//   <expr> contains <value>    → substring match
+//
+// `<expr>` is any template expression (no `${{ }}` wrapper); expressions never
+// contain whitespace, so the first whitespace separates it from the operator.
+pub fn check_condition(condition: &str, ctx: &Context) -> Result<()> {
+    let condition = condition.trim();
+    if condition.is_empty() {
+        bail!("empty expect condition");
+    }
+
+    let (expr, rest) = match condition.split_once(char::is_whitespace) {
+        Some((expr, rest)) => (expr, rest.trim_start()),
+        None => (condition, ""),
+    };
+    let actual = eval_expr(expr, ctx).map_err(|e| anyhow::anyhow!("expect '{}': {}", expr, e))?;
+
+    if rest.is_empty() {
+        return Ok(());
+    }
+    let (op, expected) = match rest.split_once(char::is_whitespace) {
+        Some((op, value)) => (op, value.trim_start()),
+        None => (rest, ""),
+    };
+    let passed = match op {
+        "==" => actual == expected,
+        "!=" => actual != expected,
+        "contains" => actual.contains(expected),
+        other => bail!(
+            "unknown expect operator '{}' (supported: ==, !=, contains)",
+            other
+        ),
+    };
+    if !passed {
+        bail!("expect failed: {} (actual: {})", condition, actual);
+    }
+    Ok(())
+}
+
 // Replace all ${{ expr }} placeholders in `text` using values from `ctx`.
 pub fn interpolate(text: &str, ctx: &Context) -> Result<String> {
     let mut result = String::new();

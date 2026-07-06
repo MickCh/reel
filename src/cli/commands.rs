@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 
+#[derive(Debug)]
 pub enum ResponseTarget {
     Last,
     Index(usize),
     All,
 }
 
+#[derive(Debug)]
 pub enum ResponseView {
     Full,
     Body,
@@ -21,6 +23,7 @@ pub enum Command {
     Body(String),
     Send,
     Then(PathBuf),
+    Expect(String),
     Show,
     Response(ResponseTarget, ResponseView),
     Reset,
@@ -34,6 +37,7 @@ pub struct GlobalFlags {
     pub dry_run: bool,
 }
 
+#[derive(Debug)]
 pub struct ParseResult {
     pub do_show: bool,
     pub do_response: Option<(ResponseTarget, ResponseView)>,

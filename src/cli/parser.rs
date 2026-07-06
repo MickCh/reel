@@ -116,6 +116,11 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
                 let path = tokens.value_for("then", "a file path")?;
                 commands.push(Command::Then(PathBuf::from(path)));
             }
+            "expect" => {
+                let condition =
+                    tokens.value_for("expect", "a condition (e.g. expect 'status == 200')")?;
+                commands.push(Command::Expect(condition.to_string()));
+            }
             "save" => {
                 let path = tokens.value_for("save", "a path")?;
                 commands.push(Command::Save(PathBuf::from(path)));
