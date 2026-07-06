@@ -132,6 +132,9 @@ pub fn print_usage() {
     eprintln!("  header-rm <KEY>        remove a header by name");
     eprintln!("  header-rm-all          remove all headers");
     eprintln!("  body <BODY>            set request body");
+    eprintln!(
+        "  body @<PATH> / body -  set request body from a file / from stdin (@@ escapes a literal @)"
+    );
     eprintln!("  send                   send the current request");
     eprintln!(
         "  --dry-run              print the request that would be sent, without sending it (position-independent)"

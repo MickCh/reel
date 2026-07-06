@@ -30,6 +30,27 @@ fn with_session_cookies(request: &Request, jar: &[Cookie]) -> Request {
     request
 }
 
+// Resolve the value of a `body` command: '-' reads stdin, '@path' reads a
+// file (verbatim, like curl's --data-binary), '@@...' escapes a literal body
+// starting with '@'. Resolution happens here rather than in parse_args, which
+// must stay I/O-free.
+fn resolve_body(value: &str) -> Result<String> {
+    if value == "-" {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+            .map_err(|e| anyhow::anyhow!("error reading body from stdin: {}", e))?;
+        return Ok(buf);
+    }
+    if let Some(rest) = value.strip_prefix('@') {
+        if rest.starts_with('@') {
+            return Ok(rest.to_string());
+        }
+        return std::fs::read_to_string(rest)
+            .map_err(|e| anyhow::anyhow!("error reading body file '{}': {}", rest, e));
+    }
+    Ok(value.to_string())
+}
+
 // Shared execution path of `send` and `then`: run the request, record it in
 // the history, persist the session, print the result, and honour `fail`.
 // `session.save()` must come before any stdout write — broken-pipe safety.
@@ -234,7 +255,7 @@ pub fn run_commands(
                 modified = true;
             }
             Command::Body(b) => {
-                state.request.body = Some(b);
+                state.request.body = Some(resolve_body(&b)?);
                 modified = true;
             }
             Command::Save(path) => {

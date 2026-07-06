@@ -771,6 +771,50 @@ fn dry_run_skips_expect() {
     .unwrap();
 }
 
+// --- body @file / stdin ---
+
+#[test]
+fn body_at_reads_file() {
+    let path = std::env::temp_dir().join(format!("reel_body_{}.json", std::process::id()));
+    std::fs::write(&path, "{\"from\":\"file\"}\n").unwrap();
+
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    run(
+        &format!("body @{}", path.display()),
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    // File contents are taken verbatim, trailing newline included.
+    assert_eq!(state.request.body.as_deref(), Some("{\"from\":\"file\"}\n"));
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn body_at_missing_file_is_error() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    let err = run("body @/nonexistent/reel.json", &mut state, &http, &session).unwrap_err();
+    assert!(err.to_string().contains("body file"), "{err}");
+}
+
+#[test]
+fn body_double_at_is_literal() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run("body @@handle", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.request.body.as_deref(), Some("@handle"));
+}
+
 // --- retry / polling ---
 
 #[test]

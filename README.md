@@ -72,6 +72,7 @@ Commands can be combined freely in a single invocation.
 | `header-rm <KEY>` | Remove a header by name |
 | `header-rm-all` | Remove all headers |
 | `body <BODY>` | Set request body |
+| `body @<PATH>` / `body -` | Set request body from a file / from stdin (`@@` escapes a body that starts with a literal `@`) |
 | `send` | Send the request using current session state |
 | `expect <CONDITION>` | Assert on the last response; abort with exit code 1 on failure |
 | `--dry-run` | Print the request that would be sent, without sending it (position-independent) |
@@ -105,6 +106,15 @@ reel send
 
 ```bash
 reel method GET url https://httpbin.org/get send
+```
+
+### Body from a file or stdin
+
+Like curl, `body` accepts `@path` to read the body from a file (verbatim, as with `--data-binary`) and `-` to read it from stdin — large payloads stay out of shell history:
+
+```bash
+reel method POST body @payload.json send
+jq '.data' export.json | reel body - send
 ```
 
 ### Reuse settings across calls
