@@ -528,3 +528,71 @@ fn unknown_function_is_error() {
         .to_string();
     assert!(err.contains("unknown template function"), "{err}");
 }
+
+// --- default values ---
+
+#[test]
+fn default_used_when_env_var_missing() {
+    assert_eq!(
+        interpolate(
+            "${{ env.REEL_TEST_SURELY_UNSET | default: localhost:8080 }}",
+            &empty_ctx()
+        )
+        .unwrap(),
+        "localhost:8080"
+    );
+}
+
+#[test]
+fn default_ignored_when_expression_resolves() {
+    // Safe: test-only variable, no other test reads it.
+    unsafe { std::env::set_var("REEL_TEST_DEFAULT_SET", "real") };
+    assert_eq!(
+        interpolate(
+            "${{ env.REEL_TEST_DEFAULT_SET | default: fallback }}",
+            &empty_ctx()
+        )
+        .unwrap(),
+        "real"
+    );
+}
+
+#[test]
+fn default_used_when_history_missing() {
+    assert_eq!(
+        interpolate("${{ body.token | default: anonymous }}", &empty_ctx()).unwrap(),
+        "anonymous"
+    );
+}
+
+#[test]
+fn default_value_may_contain_spaces_and_be_empty() {
+    assert_eq!(
+        interpolate(
+            "${{ env.REEL_TEST_SURELY_UNSET | default: a b c }}",
+            &empty_ctx()
+        )
+        .unwrap(),
+        "a b c"
+    );
+    assert_eq!(
+        interpolate("${{ env.REEL_TEST_SURELY_UNSET | default: }}", &empty_ctx()).unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn pipe_without_default_keyword_is_error() {
+    let err = interpolate("${{ status | fallback: x }}", &empty_ctx())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("default:"), "{err}");
+}
+
+#[test]
+fn pipe_inside_quoted_literal_is_not_a_default() {
+    assert_eq!(
+        interpolate("${{ base64('a|b') }}", &empty_ctx()).unwrap(),
+        "YXxi"
+    );
+}

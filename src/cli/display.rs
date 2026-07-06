@@ -188,6 +188,9 @@ pub fn print_usage() {
         "  ${{{{ now() }}}} / ${{{{ now(+N) }}}}     Unix timestamp, optionally shifted by N seconds"
     );
     eprintln!("  ${{{{ base64(arg) }}}}             base64 of a 'literal' or nested expression");
+    eprintln!(
+        "  ${{{{ expr | default: value }}}}   fallback used when the expression cannot be resolved"
+    );
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  reel method GET url https://httpbin.org/get send");

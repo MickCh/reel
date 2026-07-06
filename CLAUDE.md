@@ -174,6 +174,7 @@ Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `
 | `uuid()` | Random v4 UUID (each placeholder evaluated independently) |
 | `now()` / `now(±N)` | Current Unix timestamp in seconds, optionally shifted by N seconds |
 | `base64(<arg>)` | Base64 of the argument: a single-quoted literal (`base64('user:pass')`) or a nested expression (`base64(env.CREDS)`), evaluated recursively |
+| `<expr> \| default: <value>` | Fallback when `<expr>` cannot be resolved (unset env var, missing history/key). Split at the first `\|` outside single quotes; handled in `eval_placeholder` (interpolation only — `expect`/`--until` conditions do not support it) |
 
 The bare `body`/`status`/`headers.*` forms always refer to the **last** response; bare `request.*` refers to the **last** request. Use `response[N].*` / `request[N].*` to reach any earlier entry in the chain by 1-based index. Requests and responses share the same 1-based index (`request[N]` is the request that produced `response[N]`). Request records are captured *after* interpolation, so `request.*` reflects the values actually sent.
 

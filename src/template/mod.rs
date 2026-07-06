@@ -331,6 +331,39 @@ pub fn check_condition(condition: &str, ctx: &Context) -> Result<()> {
     Ok(())
 }
 
+// Split `expr | default: value` at the first '|' outside single quotes
+// (quotes shield literals like base64('a|b')).
+fn split_default(expr: &str) -> Option<(&str, &str)> {
+    let mut in_quotes = false;
+    for (i, c) in expr.char_indices() {
+        match c {
+            '\'' => in_quotes = !in_quotes,
+            '|' if !in_quotes => return Some((&expr[..i], &expr[i + 1..])),
+            _ => {}
+        }
+    }
+    None
+}
+
+// Evaluate one placeholder, honouring an optional `| default: <value>`
+// fallback: when the expression cannot be resolved (unset env var, missing
+// history, absent JSON key, ...), the default text is used instead.
+fn eval_placeholder(expr: &str, ctx: &Context) -> Result<String> {
+    let Some((expr_part, rest)) = split_default(expr) else {
+        return eval_expr(expr, ctx);
+    };
+    let default = rest.trim().strip_prefix("default:").ok_or_else(|| {
+        anyhow::anyhow!(
+            "expected '| default: <value>' after '|' in '${{{{ {} }}}}'",
+            expr
+        )
+    })?;
+    match eval_expr(expr_part.trim_end(), ctx) {
+        Ok(value) => Ok(value),
+        Err(_) => Ok(default.trim_start().to_string()),
+    }
+}
+
 // Replace all ${{ expr }} placeholders in `text` using values from `ctx`.
 pub fn interpolate(text: &str, ctx: &Context) -> Result<String> {
     let mut result = String::new();
@@ -343,7 +376,7 @@ pub fn interpolate(text: &str, ctx: &Context) -> Result<String> {
             .ok_or_else(|| anyhow::anyhow!("unclosed '${{' in template"))?;
         let expr = remaining[..end].trim();
         remaining = &remaining[end + 2..];
-        result.push_str(&eval_expr(expr, ctx)?);
+        result.push_str(&eval_placeholder(expr, ctx)?);
     }
     result.push_str(remaining);
     Ok(result)

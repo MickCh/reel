@@ -202,12 +202,17 @@ Supported expressions in preset files:
 | `${{ uuid() }}` | A random v4 UUID (fresh per placeholder — handy for idempotency keys) |
 | `${{ now() }}` / `${{ now(+3600) }}` | Current Unix timestamp in seconds, optionally shifted |
 | `${{ base64('user:pass') }}` / `${{ base64(env.CREDS) }}` | Base64 of a quoted literal or of a nested expression (e.g. for Basic auth) |
+| `${{ env.API_HOST \| default: localhost:8080 }}` | Fallback value used when the expression cannot be resolved |
 
 The bare `body`/`status`/`headers.*` forms always refer to the **last** response, and bare `request.*` to the **last** request. Use `response[N].*` / `request[N].*` when you need to reach an earlier step in the chain — requests and responses share the same index, so `request[N]` is the request that produced `response[N]`.
 
 Request values are captured **after** interpolation, so `${{ request.* }}` reflects what was actually sent (useful for echoing back an id, correlation header, or URL you built in a previous step).
 
-`${{ env.NAME }}` reads a variable from the process environment — handy for keeping secrets out of preset files (`"Authorization": "Bearer ${{ env.API_TOKEN }}"`). Because it does not depend on history, a preset that uses only `env.*` interpolates fine even as the first request in a chain. A referenced variable that is not set aborts the chain.
+`${{ env.NAME }}` reads a variable from the process environment — handy for keeping secrets out of preset files (`"Authorization": "Bearer ${{ env.API_TOKEN }}"`). Because it does not depend on history, a preset that uses only `env.*` interpolates fine even as the first request in a chain. A referenced variable that is not set aborts the chain — unless the placeholder carries a `| default: <value>` fallback, which is used whenever the expression cannot be resolved:
+
+```json
+{ "url": "https://${{ env.API_HOST | default: localhost:8080 }}/users" }
+```
 
 #### Two-step example
 
