@@ -6,7 +6,7 @@ use crate::session::{PresetStore, SessionStore};
 use crate::template::{Context, apply_interpolation, check_condition};
 
 use super::commands::{Command, GlobalFlags, ParseResult, ResponseTarget, ResponseView};
-use super::display::{format_curl, format_status, print_body, print_dry_run};
+use super::display::{format_curl, format_size, format_status, print_body, print_dry_run};
 
 // Host, path, and https-ness of the request URL — the context needed for
 // cookie matching. None when the URL is unset or unparseable (in which case
@@ -135,10 +135,12 @@ fn execute_and_record(
     session.save(state)?;
 
     let last = state.responses.last().unwrap();
-    match status_note {
-        Some(note) => eprintln!("< {} ({})", format_status(last.status), note),
-        None => eprintln!("< {}", format_status(last.status)),
-    }
+    let mut notes = vec![
+        format!("{} ms", last.elapsed_ms),
+        format_size(last.body.len()),
+    ];
+    notes.extend(status_note.map(str::to_string));
+    eprintln!("< {} ({})", format_status(last.status), notes.join(", "));
     print_body(&last.body, true);
     if let Some(e) = until_error {
         return Err(e);

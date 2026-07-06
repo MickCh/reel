@@ -107,6 +107,7 @@ struct ResponseRecord {
     headers: Headers,
     body:    String,
     set_cookies: Vec<String>,  // raw Set-Cookie values (can't be ", "-joined into headers)
+    elapsed_ms: u64,           // request duration; 0 in records from older versions
 }
 
 struct Cookie {                // model/cookies.rs — simplified RFC 6265
@@ -160,6 +161,7 @@ Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `
 | Expression | Resolves to |
 |---|---|
 | `status` | HTTP status code of the last response (string) |
+| `elapsed` | Duration of the last request in milliseconds (also `response[N].elapsed`) |
 | `body` | Raw body text of the last response |
 | `body.<dot.path>` | Dot-path into the last response body (e.g. `body.access.token`, `body.items.0.id`) |
 | `headers.<name>` | Response header value from the last response (e.g. `headers.content-type`) |

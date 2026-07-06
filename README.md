@@ -216,6 +216,7 @@ Supported expressions in preset files:
 | Expression | Resolves to |
 |---|---|
 | `${{ status }}` | HTTP status code of the **last** response |
+| `${{ elapsed }}` | Duration of the last request in milliseconds (also `response[N].elapsed`) |
 | `${{ body }}` | Raw body of the **last** response |
 | `${{ body.some.field }}` | Dot-path into the last response body (e.g. `body.access.token`, `body.items.0.id`) |
 | `${{ headers.content-type }}` | A header value from the last response |
@@ -381,7 +382,7 @@ Details:
 
 ## Output
 
-- Response status is written to **stderr** (`200 OK`)
+- Response status is written to **stderr**, with timing and body size (`< 200 OK (142 ms, 4.1 kB)`)
 - Response body is written to **stdout**
 - When stdout is a terminal, a JSON body is pretty-printed for readability; when piped or redirected, the raw bytes are written untouched — `reel send | jq .` sees exactly what the server sent
 - `show`, confirmations (`Request loaded from: …`, `Session cleared.`), and all diagnostic messages go to **stderr**

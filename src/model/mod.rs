@@ -126,6 +126,9 @@ pub struct ResponseRecord {
     // joining them with ", " would be ambiguous (Expires dates contain commas).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub set_cookies: Vec<String>,
+    // Wall-clock request duration. 0 in records written by older versions.
+    #[serde(default)]
+    pub elapsed_ms: u64,
 }
 
 // A session: the request currently being built plus the request/response

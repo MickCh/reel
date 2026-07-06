@@ -36,6 +36,7 @@ impl HttpClient for ReqwestClient {
         let method = reqwest::Method::from_bytes(method_name.as_bytes())
             .map_err(|_| anyhow::anyhow!("error: invalid HTTP method '{}'", method_name))?;
 
+        let started = std::time::Instant::now();
         let mut builder = self.client.request(method, &url);
         for (k, v) in request.headers.iter() {
             builder = builder.header(k, v);
@@ -86,6 +87,7 @@ impl HttpClient for ReqwestClient {
             headers: resp_headers.into(),
             body,
             set_cookies,
+            elapsed_ms: started.elapsed().as_millis() as u64,
         })
     }
 }

@@ -35,12 +35,16 @@ fn traverse_json(value: &serde_json::Value, path: &str) -> Option<String> {
 //
 // Supported forms:
 //   status              → HTTP status code as a string
+//   elapsed             → request duration in milliseconds
 //   body                → raw response body
 //   body.<path>         → dot-path into the JSON body (e.g. body.access.token)
 //   headers.<name>      → response header value (e.g. headers.content-type)
 fn eval_record_expr(expr: &str, record: &ResponseRecord) -> Result<String> {
     if expr == "status" {
         return Ok(record.status.to_string());
+    }
+    if expr == "elapsed" {
+        return Ok(record.elapsed_ms.to_string());
     }
     if expr == "body" {
         return Ok(record.body.clone());

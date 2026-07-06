@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Verb shortcuts: `reel get <URL>` (and `post`/`put`/`patch`/`delete`/`head`/`options`) sets the method and URL and sends in one word. The implied send runs after all other commands (so trailing `body`/`header` still apply) and before any `expect`; it is skipped when an explicit `send`/`then` is present.
 - `curl` command: prints the current request (session cookies included) as an equivalent shell-quoted `curl` command on stdout.
 - JSON response bodies are pretty-printed when stdout is a terminal (`send`/`then` output and `response body`). Piped or redirected output is unchanged: raw bytes, exactly as received.
+- Response timing and size: the status line shows request duration and body size (`< 200 OK (142 ms, 4.1 kB)`), the duration is stored per response (`elapsed_ms`, visible in `response`), and templates/assertions can read it via `${{ elapsed }}` / `response[N].elapsed`.
 
 ## [0.1.1] - 2026-07-03
 

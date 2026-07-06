@@ -30,6 +30,19 @@ pub(super) fn format_status(code: u16) -> String {
     }
 }
 
+// Human-readable byte count (1024-based, one decimal above bytes).
+pub(super) fn format_size(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{} B", bytes)
+    } else if b < KB * KB {
+        format!("{:.1} kB", b / KB)
+    } else {
+        format!("{:.1} MB", b / (KB * KB))
+    }
+}
+
 fn source_label(r: &ResponseRecord) -> &str {
     r.source.as_deref().unwrap_or("(session)")
 }
@@ -40,6 +53,7 @@ fn response_display_value(r: &ResponseRecord) -> serde_json::Value {
     serde_json::json!({
         "source": r.source,
         "status": r.status,
+        "elapsed_ms": r.elapsed_ms,
         "headers": r.headers,
         "body": body_val,
     })
@@ -201,6 +215,7 @@ pub fn print_usage() {
     eprintln!();
     eprintln!("Template interpolation in files loaded by 'then':");
     eprintln!("  ${{{{ status }}}}                  HTTP status code of the last response");
+    eprintln!("  ${{{{ elapsed }}}}                 duration of the last request in milliseconds");
     eprintln!("  ${{{{ body }}}}                    raw body of the last response");
     eprintln!("  ${{{{ body.field.sub }}}}          dot-path into the last response body");
     eprintln!("  ${{{{ headers.name }}}}            response header value from the last response");

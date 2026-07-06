@@ -596,3 +596,22 @@ fn pipe_inside_quoted_literal_is_not_a_default() {
         "YXxi"
     );
 }
+
+// --- elapsed ---
+
+#[test]
+fn elapsed_expression_resolves() {
+    let mut r = record(200, "{}", &[]);
+    r.elapsed_ms = 142;
+    let responses = [record(200, "{}", &[]), r];
+    let ctx = Context {
+        requests: &[],
+        responses: &responses,
+    };
+    assert_eq!(interpolate("${{ elapsed }}", &ctx).unwrap(), "142");
+    assert_eq!(
+        interpolate("${{ response[1].elapsed }}", &ctx).unwrap(),
+        "0"
+    );
+    assert!(check_condition("elapsed == 142", &ctx).is_ok());
+}

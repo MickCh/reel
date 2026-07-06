@@ -380,3 +380,11 @@ fn state_without_cookies_omits_field() {
     let json = serde_json::to_string(&state).unwrap();
     assert!(!json.contains("cookies"));
 }
+
+#[test]
+fn response_record_without_elapsed_defaults_to_zero() {
+    // Session files written by older versions have no elapsed_ms field.
+    let restored: ResponseRecord =
+        serde_json::from_str(r#"{"status":200,"headers":{},"body":"ok"}"#).unwrap();
+    assert_eq!(restored.elapsed_ms, 0);
+}

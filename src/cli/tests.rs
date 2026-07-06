@@ -1255,3 +1255,13 @@ fn send_keeps_jar_but_clears_history() {
     assert_eq!(state.responses.len(), 1);
     assert_eq!(state.cookies.len(), 1);
 }
+
+// --- format_size ---
+
+#[test]
+fn format_size_scales_units() {
+    assert_eq!(display::format_size(0), "0 B");
+    assert_eq!(display::format_size(512), "512 B");
+    assert_eq!(display::format_size(4200), "4.1 kB");
+    assert_eq!(display::format_size(5 * 1024 * 1024), "5.0 MB");
+}
