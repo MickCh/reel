@@ -11,6 +11,26 @@ pub struct Context<'a> {
     pub responses: &'a [ResponseRecord],
 }
 
+// Marker for "the expression is well-formed but the data it references is
+// absent": an unset env var, missing history entry, absent JSON key or
+// header, a non-JSON body. Only these errors are absorbed by a `| default:`
+// fallback; structural errors (unknown function or expression, bad index
+// syntax) always propagate, so a typo cannot silently become the default.
+#[derive(Debug)]
+struct Unresolvable(String);
+
+impl std::fmt::Display for Unresolvable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unresolvable {}
+
+fn unresolvable(msg: String) -> anyhow::Error {
+    anyhow::Error::new(Unresolvable(msg))
+}
+
 // Navigate a dot-separated path through a JSON value.
 // Array indices are supported as numeric path segments (e.g. "items.0.id").
 fn traverse_json(value: &serde_json::Value, path: &str) -> Option<String> {
@@ -54,13 +74,13 @@ fn eval_record_expr(expr: &str, record: &ResponseRecord) -> Result<String> {
             .headers
             .get(name)
             .map(str::to_string)
-            .ok_or_else(|| anyhow::anyhow!("header '{}' not found in response", name));
+            .ok_or_else(|| unresolvable(format!("header '{}' not found in response", name)));
     }
     if let Some(path) = expr.strip_prefix("body.") {
         let json: serde_json::Value = serde_json::from_str(&record.body)
-            .map_err(|e| anyhow::anyhow!("response body is not valid JSON: {}", e))?;
+            .map_err(|e| unresolvable(format!("response body is not valid JSON: {}", e)))?;
         return traverse_json(&json, path)
-            .ok_or_else(|| anyhow::anyhow!("path '{}' not found in response body", path));
+            .ok_or_else(|| unresolvable(format!("path '{}' not found in response body", path)));
     }
     bail!("unknown template expression '${{{{ {} }}}}'", expr)
 }
@@ -78,32 +98,31 @@ fn eval_request_expr(expr: &str, record: &Request) -> Result<String> {
         "method" => record
             .method
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("request method not set")),
+            .ok_or_else(|| unresolvable("request method not set".to_string())),
         "url" => record
             .url
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("request url not set")),
+            .ok_or_else(|| unresolvable("request url not set".to_string())),
         "body" => record
             .body
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("request body not set")),
+            .ok_or_else(|| unresolvable("request body not set".to_string())),
         _ => {
             if let Some(name) = expr.strip_prefix("headers.") {
-                return record
-                    .headers
-                    .get(name)
-                    .map(str::to_string)
-                    .ok_or_else(|| anyhow::anyhow!("header '{}' not found in request", name));
+                return record.headers.get(name).map(str::to_string).ok_or_else(|| {
+                    unresolvable(format!("header '{}' not found in request", name))
+                });
             }
             if let Some(path) = expr.strip_prefix("body.") {
                 let body = record
                     .body
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("request body not set"))?;
+                    .ok_or_else(|| unresolvable("request body not set".to_string()))?;
                 let json: serde_json::Value = serde_json::from_str(body)
-                    .map_err(|e| anyhow::anyhow!("request body is not valid JSON: {}", e))?;
-                return traverse_json(&json, path)
-                    .ok_or_else(|| anyhow::anyhow!("path '{}' not found in request body", path));
+                    .map_err(|e| unresolvable(format!("request body is not valid JSON: {}", e)))?;
+                return traverse_json(&json, path).ok_or_else(|| {
+                    unresolvable(format!("path '{}' not found in request body", path))
+                });
             }
             bail!("unknown request expression 'request.{}'", expr)
         }
@@ -147,15 +166,15 @@ fn pick<'a, T>(records: &'a [T], idx: Option<usize>, kind: &str) -> Result<&'a T
     match idx {
         None => records
             .last()
-            .ok_or_else(|| anyhow::anyhow!("no previous {}", kind)),
+            .ok_or_else(|| unresolvable(format!("no previous {}", kind))),
         Some(n) => records.get(n - 1).ok_or_else(|| {
-            anyhow::anyhow!(
+            unresolvable(format!(
                 "{}[{}]: only {} {}(s) available",
                 kind,
                 n,
                 records.len(),
                 kind
-            )
+            ))
         }),
     }
 }
@@ -263,7 +282,7 @@ fn eval_expr(expr: &str, ctx: &Context) -> Result<String> {
     // Environment variables — independent of request/response history.
     if let Some(name) = expr.strip_prefix("env.") {
         return std::env::var(name)
-            .map_err(|_| anyhow::anyhow!("environment variable '{}' not set", name));
+            .map_err(|_| unresolvable(format!("environment variable '{}' not set", name)));
     }
 
     // Request history: request.<field> (last) or request[N].<field> (1-based).
@@ -288,7 +307,7 @@ fn eval_expr(expr: &str, ctx: &Context) -> Result<String> {
     let record = ctx
         .responses
         .last()
-        .ok_or_else(|| anyhow::anyhow!("no previous response"))?;
+        .ok_or_else(|| unresolvable("no previous response".to_string()))?;
     eval_record_expr(expr, record)
 }
 
@@ -351,7 +370,9 @@ fn split_default(expr: &str) -> Option<(&str, &str)> {
 
 // Evaluate one placeholder, honouring an optional `| default: <value>`
 // fallback: when the expression cannot be resolved (unset env var, missing
-// history, absent JSON key, ...), the default text is used instead.
+// history, absent JSON key, ...), the default text is used instead. Only
+// `Unresolvable` errors are absorbed — a structural error such as a
+// misspelled function name propagates even with a default present.
 fn eval_placeholder(expr: &str, ctx: &Context) -> Result<String> {
     let Some((expr_part, rest)) = split_default(expr) else {
         return eval_expr(expr, ctx);
@@ -364,7 +385,8 @@ fn eval_placeholder(expr: &str, ctx: &Context) -> Result<String> {
     })?;
     match eval_expr(expr_part.trim_end(), ctx) {
         Ok(value) => Ok(value),
-        Err(_) => Ok(default.trim_start().to_string()),
+        Err(e) if e.is::<Unresolvable>() => Ok(default.trim_start().to_string()),
+        Err(e) => Err(e),
     }
 }
 

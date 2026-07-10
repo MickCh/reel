@@ -582,6 +582,48 @@ fn default_value_may_contain_spaces_and_be_empty() {
 }
 
 #[test]
+fn default_does_not_mask_unknown_function() {
+    // A misspelled function is a structural error, not missing data — it must
+    // propagate even with a default present.
+    let err = interpolate("${{ uuidd() | default: x }}", &empty_ctx())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown template function"), "{err}");
+}
+
+#[test]
+fn default_does_not_mask_unknown_expression() {
+    let responses = [record(200, "{}", &[])];
+    let ctx = Context {
+        requests: &[],
+        responses: &responses,
+    };
+    let err = interpolate("${{ statas | default: x }}", &ctx)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown template expression"), "{err}");
+
+    let rq = request("GET", "https://x", None, &[]);
+    let err = interp_full("${{ request.methud | default: x }}", &[rq], &[])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown request expression"), "{err}");
+}
+
+#[test]
+fn default_applies_to_unresolvable_inside_function() {
+    // The Unresolvable marker survives the nested evaluation in base64(...).
+    assert_eq!(
+        interpolate(
+            "${{ base64(env.REEL_TEST_SURELY_UNSET) | default: none }}",
+            &empty_ctx()
+        )
+        .unwrap(),
+        "none"
+    );
+}
+
+#[test]
 fn pipe_without_default_keyword_is_error() {
     let err = interpolate("${{ status | fallback: x }}", &empty_ctx())
         .unwrap_err()
