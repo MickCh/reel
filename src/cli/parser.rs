@@ -93,7 +93,9 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
     };
 
     let mut commands = Vec::new();
-    let mut implied_send = false;
+    // Index just past the last verb shortcut's Method+Url — the earliest
+    // position the implied send may take.
+    let mut verb_end: Option<usize> = None;
     let mut tokens = Tokens::new(args);
     while let Some(token) = tokens.next() {
         match token {
@@ -104,7 +106,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
                 let url = tokens.value_for(token, "a URL")?;
                 commands.push(Command::Method(token.to_uppercase()));
                 commands.push(Command::Url(url.to_string()));
-                implied_send = true;
+                verb_end = Some(commands.len());
             }
             "fail" | "--insecure" | "insecure" | "--dry-run" | "dry-run" => {}
             "--retry" => {
@@ -180,17 +182,18 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
     }
 
     // A verb shortcut implies exactly one send, unless the user already wrote
-    // an explicit send/then. It goes before the first expect so assertions
-    // check the verb's response.
-    if implied_send
+    // an explicit send/then. It goes before the first expect written after
+    // the verb, so assertions check the verb's response; an expect written
+    // before the verb keeps asserting on the prior session history.
+    if let Some(verb_end) = verb_end
         && !commands
             .iter()
             .any(|c| matches!(c, Command::Send | Command::Then(_)))
     {
-        let pos = commands
+        let pos = commands[verb_end..]
             .iter()
             .position(|c| matches!(c, Command::Expect(_)))
-            .unwrap_or(commands.len());
+            .map_or(commands.len(), |i| verb_end + i);
         commands.insert(pos, Command::Send);
     }
 

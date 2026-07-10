@@ -66,8 +66,6 @@ fn execute_and_record(
         eprintln!("warning: body is set but Content-Type header is missing");
     }
 
-    let request = with_session_cookies(&state.request, &state.cookies);
-
     // Attempt budget: --retry N gives N extra attempts; polling with --until
     // alone gets a default budget of 10 attempts.
     let max_attempts = match (&flags.until, flags.retry) {
@@ -79,9 +77,21 @@ fn execute_and_record(
     // recorded and printed, but the chain aborts afterwards.
     let mut until_error = None;
 
-    let record = loop {
+    let (request, record) = loop {
+        // Rebuilt each attempt: a Set-Cookie received on a retried attempt
+        // must be reflected in the next one.
+        let request = with_session_cookies(&state.request, &state.cookies);
         let reason = match http.execute(&request, source) {
             Ok(record) => {
+                // Every attempt's cookies enter the jar, not just the final
+                // one — servers rotate session cookies mid-poll.
+                if let Some((host, path, _)) = url_parts(request.url.as_deref()) {
+                    for raw in &record.set_cookies {
+                        if let Some(update) = parse_set_cookie(raw, &host, &path) {
+                            update_jar(&mut state.cookies, update);
+                        }
+                    }
+                }
                 if let Some(condition) = &flags.until {
                     // Evaluate against the history as it would look with this
                     // response appended.
@@ -92,7 +102,7 @@ fn execute_and_record(
                         responses: &responses,
                     };
                     if check_condition(condition, &ctx).is_ok() {
-                        break record;
+                        break (request, record);
                     }
                     if attempt >= max_attempts {
                         until_error = Some(anyhow::anyhow!(
@@ -100,13 +110,13 @@ fn execute_and_record(
                             condition,
                             max_attempts
                         ));
-                        break record;
+                        break (request, record);
                     }
                     "condition not met"
                 } else if record.status >= 500 && attempt < max_attempts {
                     "server error"
                 } else {
-                    break record;
+                    break (request, record);
                 }
             }
             Err(e) => {
@@ -123,13 +133,6 @@ fn execute_and_record(
         );
         std::thread::sleep(std::time::Duration::from_secs(flags.delay_secs));
     };
-    if let Some((host, path, _)) = url_parts(request.url.as_deref()) {
-        for raw in &record.set_cookies {
-            if let Some(update) = parse_set_cookie(raw, &host, &path) {
-                update_jar(&mut state.cookies, update);
-            }
-        }
-    }
     state.requests.push(request);
     state.responses.push(record);
     session.save(state)?;

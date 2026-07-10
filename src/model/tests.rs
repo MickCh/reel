@@ -261,6 +261,44 @@ fn parse_set_cookie_rejects_unrelated_domain() {
 }
 
 #[test]
+fn parse_set_cookie_ip_host_rejects_suffix_domain() {
+    // "0.0.1" is a dot-preceded suffix of "127.0.0.1", but suffix matching
+    // must never apply to IP addresses (RFC 6265: host-only for IPs).
+    assert!(parse_set_cookie("sid=x; Domain=0.0.1", "127.0.0.1", "/").is_none());
+    assert!(parse_set_cookie("sid=x; Domain=:1", "[::1]", "/").is_none());
+    // A Domain identical to the IP host is fine.
+    let c = set(parse_set_cookie(
+        "sid=x; Domain=127.0.0.1",
+        "127.0.0.1",
+        "/",
+    ));
+    assert_eq!(c.domain, "127.0.0.1");
+}
+
+#[test]
+fn cookie_ip_host_matches_exactly_only() {
+    // A jar entry with an IP-suffix domain (e.g. from an old session file)
+    // must not match a longer IP via the suffix rule.
+    let c = Cookie {
+        name: "sid".to_string(),
+        value: "x".to_string(),
+        domain: "0.0.1".to_string(),
+        path: "/".to_string(),
+        secure: false,
+        host_only: false,
+    };
+    assert!(!c.matches("127.0.0.1", "/", true));
+
+    let exact = set(parse_set_cookie(
+        "sid=x; Domain=127.0.0.1",
+        "127.0.0.1",
+        "/",
+    ));
+    assert!(exact.matches("127.0.0.1", "/", true));
+    assert!(!exact.matches("127.0.0.2", "/", true));
+}
+
+#[test]
 fn parse_set_cookie_max_age_zero_is_delete() {
     match parse_set_cookie("sid=; Path=/; Max-Age=0", "example.com", "/") {
         Some(SetCookie::Delete { name, domain, path }) => {

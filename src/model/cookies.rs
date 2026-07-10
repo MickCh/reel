@@ -29,6 +29,27 @@ pub enum SetCookie {
     },
 }
 
+// RFC 6265 domain-match: the host is identical to the domain, or the domain
+// is a dot-preceded suffix of it. Suffix matching never applies when the host
+// is an IP address ("0.0.1" must not match host "127.0.0.1").
+fn domain_match(host: &str, domain: &str) -> bool {
+    host == domain
+        || (!is_ip_address(host)
+            && host
+                .strip_suffix(domain)
+                .is_some_and(|prefix| prefix.ends_with('.')))
+}
+
+fn is_ip_address(host: &str) -> bool {
+    // url::Url keeps the brackets on IPv6 hosts ("[::1]").
+    host.parse::<std::net::Ipv4Addr>().is_ok()
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::Ipv6Addr>()
+            .is_ok()
+}
+
 // RFC 6265 default-path: the request path up to (excluding) its last '/'.
 fn default_path(request_path: &str) -> String {
     if !request_path.starts_with('/') {
@@ -72,11 +93,7 @@ pub fn parse_set_cookie(raw: &str, request_host: &str, request_path: &str) -> Op
             if domain.is_empty() {
                 continue;
             }
-            let is_suffix = request_host == domain
-                || request_host
-                    .strip_suffix(&domain)
-                    .is_some_and(|prefix| prefix.ends_with('.'));
-            if !is_suffix {
+            if !domain_match(request_host, &domain) {
                 return None;
             }
             cookie.domain = domain;
@@ -118,10 +135,7 @@ impl Cookie {
         if self.host_only {
             host == self.domain
         } else {
-            host == self.domain
-                || host
-                    .strip_suffix(&self.domain)
-                    .is_some_and(|prefix| prefix.ends_with('.'))
+            domain_match(host, &self.domain)
         }
     }
 

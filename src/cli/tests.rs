@@ -892,6 +892,26 @@ fn parse_verb_implied_send_precedes_expect() {
 }
 
 #[test]
+fn parse_verb_implied_send_stays_after_leading_expect() {
+    // An expect written before the verb asserts on the prior session state;
+    // the implied send must not jump in front of method/url.
+    let (cmds, _) = parse_args(&[
+        s("expect"),
+        s("status == 200"),
+        s("get"),
+        s("https://example.com"),
+        s("expect"),
+        s("body.ok"),
+    ])
+    .unwrap();
+    assert!(matches!(&cmds[0], Command::Expect(_)));
+    assert!(matches!(cmds[1], Command::Method(_)));
+    assert!(matches!(cmds[2], Command::Url(_)));
+    assert!(matches!(cmds[3], Command::Send));
+    assert!(matches!(&cmds[4], Command::Expect(_)));
+}
+
+#[test]
 fn parse_verb_with_explicit_send_adds_no_extra() {
     let (cmds, _) = parse_args(&args("get https://example.com send")).unwrap();
     let sends = cmds.iter().filter(|c| matches!(c, Command::Send)).count();
@@ -1133,6 +1153,62 @@ fn until_budget_exhausted_records_and_errors() {
     // The last response is still recorded and persisted for inspection.
     assert_eq!(state.responses.len(), 1);
     assert_eq!(session.save_count.get(), 1);
+}
+
+#[test]
+fn until_polling_updates_jar_from_every_attempt() {
+    // A cookie set by a pending (retried) response must enter the jar and be
+    // sent back on the next attempt.
+    let mut pending = response(200, r#"{"state":"pending"}"#);
+    pending.set_cookies = vec!["poll=abc; Path=/".to_string()];
+    let http = MockHttp::sequence(vec![Ok(pending), Ok(response(200, r#"{"state":"ready"}"#))]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/job".to_string());
+
+    let (cmds, flags) = parse_args(&[
+        s("--until"),
+        s("body.state == ready"),
+        s("--delay"),
+        s("0"),
+        s("send"),
+    ])
+    .unwrap();
+    run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+
+    assert_eq!(state.cookies.len(), 1);
+    assert_eq!(state.cookies[0].name, "poll");
+    let seen = http.seen.borrow();
+    assert_eq!(seen[0].headers.get("cookie"), None);
+    assert_eq!(seen[1].headers.get("cookie"), Some("poll=abc"));
+    // The history snapshot reflects the final request as actually sent.
+    assert_eq!(state.requests[0].headers.get("cookie"), Some("poll=abc"));
+}
+
+#[test]
+fn retry_updates_jar_from_failed_attempt() {
+    let mut busy = response(503, "busy");
+    busy.set_cookies = vec!["lb=node2; Path=/".to_string()];
+    let http = MockHttp::sequence(vec![Ok(busy), Ok(response(200, "ok"))]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/".to_string());
+
+    run("--retry 1 --delay 0 send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.cookies.len(), 1);
+    assert_eq!(
+        http.seen.borrow()[1].headers.get("cookie"),
+        Some("lb=node2")
+    );
 }
 
 // --- cookie jar ---
