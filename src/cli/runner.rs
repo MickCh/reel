@@ -112,9 +112,9 @@ fn execute_and_record(
                         ));
                         break (request, record);
                     }
-                    "condition not met"
+                    "condition not met".to_string()
                 } else if record.status >= 500 && attempt < max_attempts {
-                    "server error"
+                    format!("server error ({})", format_status(record.status))
                 } else {
                     break (request, record);
                 }
@@ -123,7 +123,7 @@ fn execute_and_record(
                 if attempt >= max_attempts {
                     return Err(e);
                 }
-                "network error"
+                format!("network error ({})", e)
             }
         };
         attempt += 1;

@@ -103,6 +103,14 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
             // send, appended after all commands so modifiers written after
             // the verb (body, header, ...) still apply to the request.
             "get" | "post" | "put" | "patch" | "delete" | "head" | "options" => {
+                // A second verb would silently overwrite the first request
+                // without ever sending it — always a mistake.
+                if verb_end.is_some() {
+                    anyhow::bail!(
+                        "error: '{}' after an earlier verb shortcut — only one per invocation (chain requests with 'then', or use 'method'/'url'/'send')",
+                        token
+                    );
+                }
                 let url = tokens.value_for(token, "a URL")?;
                 commands.push(Command::Method(token.to_uppercase()));
                 commands.push(Command::Url(url.to_string()));

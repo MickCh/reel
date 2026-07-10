@@ -191,7 +191,7 @@ No external parser (no `clap`). `parse_args` is a hand-written loop over a small
 
 `show` and `response` are deferred — `parse_args` records them in the `Command` stream and `run_commands` sets flags for them, running them after all other commands complete.
 
-Verb shortcuts (`get`/`post`/`put`/`patch`/`delete`/`head`/`options <URL>`) expand at parse time to `Method` + `Url`, plus one implied `Send` inserted after the loop — before the first `Expect` if any, otherwise at the end — so modifiers written after the verb still apply to the request. The implied `Send` is skipped when the command stream already contains an explicit `Send`/`Then`.
+Verb shortcuts (`get`/`post`/`put`/`patch`/`delete`/`head`/`options <URL>`) expand at parse time to `Method` + `Url`, plus one implied `Send` inserted after the loop — before the first `Expect` that appears after the verb, otherwise at the end — so modifiers written after the verb still apply to the request, while an `Expect` written before the verb keeps asserting on the prior session history. The implied `Send` is skipped when the command stream already contains an explicit `Send`/`Then`. A second verb shortcut in one invocation is a parse error (it would silently overwrite the first request without sending it).
 
 The `response` command peeks at the next token(s) to consume an optional `all`/index and/or `body`/`headers` modifier.
 

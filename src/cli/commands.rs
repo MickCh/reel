@@ -14,6 +14,7 @@ pub enum ResponseView {
     Headers,
 }
 
+#[derive(Debug)]
 pub enum Command {
     Method(String),
     Url(String),
@@ -32,6 +33,7 @@ pub enum Command {
     Load(PathBuf),
 }
 
+#[derive(Debug)]
 pub struct GlobalFlags {
     pub insecure: bool,
     pub fail_on_error: bool,

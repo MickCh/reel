@@ -912,6 +912,12 @@ fn parse_verb_implied_send_stays_after_leading_expect() {
 }
 
 #[test]
+fn parse_second_verb_shortcut_is_error() {
+    let err = parse_args(&args("get https://a.example post https://b.example")).unwrap_err();
+    assert!(err.to_string().contains("verb shortcut"), "{err}");
+}
+
+#[test]
 fn parse_verb_with_explicit_send_adds_no_extra() {
     let (cmds, _) = parse_args(&args("get https://example.com send")).unwrap();
     let sends = cmds.iter().filter(|c| matches!(c, Command::Send)).count();
@@ -1338,6 +1344,7 @@ fn send_keeps_jar_but_clears_history() {
 fn format_size_scales_units() {
     assert_eq!(display::format_size(0), "0 B");
     assert_eq!(display::format_size(512), "512 B");
-    assert_eq!(display::format_size(4200), "4.1 kB");
-    assert_eq!(display::format_size(5 * 1024 * 1024), "5.0 MB");
+    assert_eq!(display::format_size(4200), "4.1 KiB");
+    assert_eq!(display::format_size(5 * 1024 * 1024), "5.0 MiB");
+    assert_eq!(display::format_size(3 * 1024 * 1024 * 1024), "3.0 GiB");
 }

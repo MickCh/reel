@@ -9,18 +9,20 @@ use super::commands::{ResponseTarget, ResponseView};
 // for readability; when piped, the raw bytes are written untouched so
 // `reel send | jq .` sees exactly what the server sent. `pad_newline` appends
 // a trailing newline in the raw path when the body lacks one (send/then
-// output; `response body` stays byte-exact).
-pub(super) fn print_body(body: &str, pad_newline: bool) {
+// output; `response body` stays byte-exact). Returns true when the body was
+// pretty-printed — the output then already ends with a newline.
+pub(super) fn print_body(body: &str, pad_newline: bool) -> bool {
     if std::io::stdout().is_terminal()
         && let Ok(v) = serde_json::from_str::<serde_json::Value>(body)
     {
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
-        return;
+        return true;
     }
     print!("{}", body);
     if pad_newline && !body.ends_with('\n') {
         println!();
     }
+    false
 }
 
 pub(super) fn format_status(code: u16) -> String {
@@ -30,16 +32,18 @@ pub(super) fn format_status(code: u16) -> String {
     }
 }
 
-// Human-readable byte count (1024-based, one decimal above bytes).
+// Human-readable byte count (1024-based binary units, one decimal above bytes).
 pub(super) fn format_size(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
+    const KIB: f64 = 1024.0;
     let b = bytes as f64;
-    if b < KB {
+    if b < KIB {
         format!("{} B", bytes)
-    } else if b < KB * KB {
-        format!("{:.1} kB", b / KB)
+    } else if b < KIB * KIB {
+        format!("{:.1} KiB", b / KIB)
+    } else if b < KIB * KIB * KIB {
+        format!("{:.1} MiB", b / (KIB * KIB))
     } else {
-        format!("{:.1} MB", b / (KB * KB))
+        format!("{:.1} GiB", b / (KIB * KIB * KIB))
     }
 }
 
@@ -61,7 +65,9 @@ fn response_display_value(r: &ResponseRecord) -> serde_json::Value {
 
 fn show_single(r: &ResponseRecord, view: &ResponseView) {
     match view {
-        ResponseView::Body => print_body(&r.body, false),
+        ResponseView::Body => {
+            print_body(&r.body, false);
+        }
         ResponseView::Headers => {
             println!("{} — {}", r.status, source_label(r));
             for (k, v) in r.headers.sorted() {
@@ -133,8 +139,10 @@ pub fn show_response(state: &State, target: ResponseTarget, view: ResponseView) 
                         let label = source_label(r);
                         eprintln!("[{}] {}", i + 1, label);
                     }
-                    print_body(&r.body, false);
-                    if i + 1 < state.responses.len() {
+                    // Pretty-printed output already ends with a newline; a
+                    // separator on top of it would leave a blank line.
+                    let pretty = print_body(&r.body, false);
+                    if !pretty && i + 1 < state.responses.len() {
                         println!();
                     }
                 }
