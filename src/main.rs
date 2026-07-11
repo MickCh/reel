@@ -9,14 +9,35 @@ use std::env;
 use session::SessionStore;
 
 fn main() {
+    // Rust ignores SIGPIPE by default, which turns `reel send | head` into a
+    // panic on the broken pipe. Restore the default so the process exits
+    // quietly like any other CLI tool (the session is saved before any stdout
+    // write, so no state is lost).
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let args: Vec<String> = env::args().skip(1).collect();
 
-    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") || args[0] == "help" {
+    if args.is_empty() {
         cli::print_usage();
         return;
     }
 
-    if args.iter().any(|a| a == "--version" || a == "-V") {
+    let (commands, flags) = match cli::parse_args(&args) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if flags.help {
+        cli::print_usage();
+        return;
+    }
+    if flags.version {
         println!("reel {}", env!("CARGO_PKG_VERSION"));
         return;
     }
@@ -31,15 +52,13 @@ fn main() {
     };
     let mut state = session.load();
 
-    let (commands, flags) = match cli::parse_args(&args) {
-        Ok(result) => result,
+    let http = match http::ReqwestClient::new(flags.insecure) {
+        Ok(http) => http,
         Err(e) => {
             eprintln!("{}", e);
             std::process::exit(1);
         }
     };
-
-    let http = http::ReqwestClient::new(flags.insecure);
     let presets = session::FilePresetStore;
 
     match cli::run_commands(commands, &flags, &mut state, &http, &session, &presets) {

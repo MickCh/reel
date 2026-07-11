@@ -38,6 +38,10 @@ pub struct GlobalFlags {
     pub insecure: bool,
     pub fail_on_error: bool,
     pub dry_run: bool,
+    // -h/--help/help and -V/--version anywhere in command position; main
+    // prints usage/version and exits without running any command.
+    pub help: bool,
+    pub version: bool,
     // Extra attempts for send/then on transient failure (network error or
     // 5xx). 0 = no retries.
     pub retry: u32,

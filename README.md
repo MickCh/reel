@@ -350,7 +350,7 @@ Supported forms: `<expr>` (must resolve), `<expr> == <value>`, `<expr> != <value
 
 ### Retrying and polling
 
-`--retry N` retries a failed `send`/`then` up to N extra times — a failure being a network error or a 5xx response. 4xx responses are not retried (they are deterministic client errors). Only the final attempt is recorded in the session history.
+`--retry N` retries a failed `send`/`then` up to N extra times — a failure being a network error or a transient 5xx response. 4xx responses and permanent 5xx statuses (501, 505, 506, 510) are not retried, and neither are deterministic client-side errors like a malformed URL, method, or header — those fail immediately instead of burning the attempt budget. Only the final attempt is recorded in the session history.
 
 ```bash
 reel --retry 3 send                    # tolerate a flaky endpoint
@@ -378,7 +378,7 @@ reel url https://example.com/profile send    # session cookie sent automatically
 Details:
 
 - A `Cookie` header you set manually (`reel header Cookie ...`) always wins over the jar.
-- The jar survives `send` (which only clears the response history) and is cleared by `reset` or when the server expires a cookie (`Max-Age=0`).
+- The jar survives `send` (which only clears the response history) and `load`; it is cleared by `reset` or when the server expires a cookie (`Max-Age=0`).
 - Cookie lifetimes (`Expires`/`Max-Age`) are not tracked otherwise — a cookie lives as long as the session.
 - Cookies are visible in `reel show` and stored in the session file (plaintext — same caveat as headers).
 
@@ -386,7 +386,8 @@ Details:
 
 - Response status is written to **stderr**, with timing and body size (`< 200 OK (142 ms, 4.1 kB)`)
 - Response body is written to **stdout**
-- When stdout is a terminal, a JSON body is pretty-printed for readability; when piped or redirected, the raw bytes are written untouched — `reel send | jq .` sees exactly what the server sent
+- When stdout is a terminal, a JSON body is pretty-printed for readability; when piped or redirected, the raw bytes are written untouched — `reel send | jq .` sees exactly what the server sent. (Exception: a body that is not valid UTF-8 — binary data — has invalid bytes replaced, with a warning on stderr; a declared non-UTF-8 charset is transcoded to UTF-8.)
+- Redirects are **not** followed (same as `curl` without `-L`): a 3xx response is shown like any other, so you can inspect the `Location` header and the cookie jar sees every hop
 - `show`, confirmations (`Request loaded from: …`, `Session cleared.`), and all diagnostic messages go to **stderr**
 - `response headers` writes headers to **stdout** (it is data, not a status message)
 

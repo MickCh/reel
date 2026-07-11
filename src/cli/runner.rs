@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::http::HttpClient;
+use crate::http::{HttpClient, PermanentError};
 use crate::model::{Cookie, Request, State, cookie_header, parse_set_cookie, update_jar};
 use crate::session::{PresetStore, SessionStore};
 use crate::template::{Context, apply_interpolation, check_condition};
@@ -51,6 +51,12 @@ fn resolve_body(value: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
+// 5xx statuses worth retrying. 501/505/506/510 describe a permanent property
+// of the server or the request, so a retry cannot change the outcome.
+fn transient_5xx(status: u16) -> bool {
+    status >= 500 && !matches!(status, 501 | 505 | 506 | 510)
+}
+
 // Shared execution path of `send` and `then`: run the request, record it in
 // the history, persist the session, print the result, and honour `fail`.
 // `session.save()` must come before any stdout write — broken-pipe safety.
@@ -94,11 +100,14 @@ fn execute_and_record(
                 }
                 if let Some(condition) = &flags.until {
                     // Evaluate against the history as it would look with this
-                    // response appended.
+                    // attempt appended — both vectors, so `request.*` refers
+                    // to the in-flight request and indices stay aligned.
+                    let mut requests = state.requests.clone();
+                    requests.push(request.clone());
                     let mut responses = state.responses.clone();
                     responses.push(record.clone());
                     let ctx = Context {
-                        requests: &state.requests,
+                        requests: &requests,
                         responses: &responses,
                     };
                     if check_condition(condition, &ctx).is_ok() {
@@ -113,14 +122,16 @@ fn execute_and_record(
                         break (request, record);
                     }
                     "condition not met".to_string()
-                } else if record.status >= 500 && attempt < max_attempts {
+                } else if transient_5xx(record.status) && attempt < max_attempts {
                     format!("server error ({})", format_status(record.status))
                 } else {
                     break (request, record);
                 }
             }
             Err(e) => {
-                if attempt >= max_attempts {
+                // A permanent error (bad URL, method, or header) cannot be
+                // fixed by retrying — fail fast instead of burning attempts.
+                if attempt >= max_attempts || e.is::<PermanentError>() {
                     return Err(e);
                 }
                 format!("network error ({})", e)
@@ -154,6 +165,15 @@ fn execute_and_record(
     Ok(())
 }
 
+// Bookkeeping threaded through the command loop: whether the state carries
+// unsaved mutations, plus the deferred show/response requests.
+#[derive(Default)]
+struct ChainState {
+    modified: bool,
+    do_show: bool,
+    do_response: Option<(ResponseTarget, ResponseView)>,
+}
+
 pub fn run_commands(
     commands: Vec<Command>,
     flags: &GlobalFlags,
@@ -162,10 +182,35 @@ pub fn run_commands(
     session: &dyn SessionStore,
     presets: &dyn PresetStore,
 ) -> Result<ParseResult> {
-    let mut modified = false;
-    let mut do_show = false;
-    let mut do_response: Option<(ResponseTarget, ResponseView)> = None;
+    let mut chain = ChainState::default();
+    let outcome = run_all(commands, flags, state, http, session, presets, &mut chain);
+    if chain.modified {
+        if outcome.is_err() {
+            // Mutations made before the failing command must survive the
+            // abort (`reel url X send` should not lose the url on a network
+            // error) — best-effort, so a save failure cannot mask the chain
+            // error the user needs to see.
+            let _ = session.save(state);
+        } else {
+            session.save(state)?;
+        }
+    }
+    outcome?;
+    Ok(ParseResult {
+        do_show: chain.do_show,
+        do_response: chain.do_response,
+    })
+}
 
+fn run_all(
+    commands: Vec<Command>,
+    flags: &GlobalFlags,
+    state: &mut State,
+    http: &dyn HttpClient,
+    session: &dyn SessionStore,
+    presets: &dyn PresetStore,
+    chain: &mut ChainState,
+) -> Result<()> {
     for cmd in commands {
         match cmd {
             Command::Send => {
@@ -178,7 +223,7 @@ pub fn run_commands(
                 state.responses.clear();
                 let note = had_responses.then_some("previous responses cleared");
                 execute_and_record(state, flags, http, session, None, note)?;
-                modified = false;
+                chain.modified = false;
             }
             Command::Then(path) => {
                 let path_str = path.to_string_lossy().into_owned();
@@ -204,7 +249,7 @@ pub fn run_commands(
                 }
 
                 execute_and_record(state, flags, http, session, Some(&path_str), None)?;
-                modified = false;
+                chain.modified = false;
             }
             Command::Expect(condition) => {
                 if flags.dry_run {
@@ -225,65 +270,66 @@ pub fn run_commands(
                 println!("{}", format_curl(&request, flags.insecure)?);
             }
             Command::Show => {
-                do_show = true;
+                chain.do_show = true;
             }
             Command::Response(target, view) => {
-                do_response = Some((target, view));
+                chain.do_response = Some((target, view));
             }
             Command::Reset => {
                 *state = State::default();
                 session.delete();
-                modified = false;
+                chain.modified = false;
                 eprintln!("Session cleared.");
             }
             Command::Method(m) => {
                 state.request.method = Some(m);
-                modified = true;
+                chain.modified = true;
             }
             Command::Url(u) => {
                 if u.is_empty() {
                     bail!("error: URL cannot be empty");
                 }
                 state.request.url = Some(u);
-                modified = true;
+                chain.modified = true;
             }
             Command::Header(key, val) => {
                 state.request.headers.insert(key, val);
-                modified = true;
+                chain.modified = true;
             }
             Command::HeaderRm(key) => {
                 if state.request.headers.remove(&key) {
-                    modified = true;
+                    chain.modified = true;
                 } else {
                     eprintln!("warning: header '{}' not found", key);
                 }
             }
             Command::HeaderRmAll => {
                 state.request.headers.clear();
-                modified = true;
+                chain.modified = true;
             }
             Command::Body(b) => {
                 state.request.body = Some(resolve_body(&b)?);
-                modified = true;
+                chain.modified = true;
             }
             Command::Save(path) => {
                 presets.save(&state.request, &path)?;
                 eprintln!("Request saved to: {}", path.display());
             }
             Command::Load(path) => {
-                *state = presets.load(&path)?;
-                modified = true;
+                let mut loaded = presets.load(&path)?;
+                // The cookie jar belongs to the session, not the loaded file —
+                // it survives `load` just like it survives `send` (only
+                // `reset` clears it). A file that explicitly carries cookies
+                // still wins.
+                if loaded.cookies.is_empty() {
+                    loaded.cookies = std::mem::take(&mut state.cookies);
+                }
+                *state = loaded;
+                chain.modified = true;
                 eprintln!("Request loaded from: {}", path.display());
             }
         }
     }
 
-    if modified {
-        session.save(state)?;
-    }
-
-    Ok(ParseResult {
-        do_show,
-        do_response,
-    })
+    Ok(())
 }

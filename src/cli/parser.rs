@@ -78,15 +78,18 @@ fn parse_header(tokens: &mut Tokens) -> Result<Command> {
 }
 
 pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
-    // Global flags apply regardless of position; pre-scan the value-less ones
-    // here and skip their tokens in the command loop below. Flags that take a
-    // value (--retry, --until, --delay) are consumed inside the loop — they
-    // are still position-independent because all flags take effect only after
-    // parsing completes.
+    // Global flags are set from their own match arms in the loop below, so
+    // they only count in command position — a token consumed as a value
+    // (`header X-Mode insecure`, `body fail`) must never flip a flag,
+    // especially not one that disables TLS verification. They stay
+    // position-independent among commands because all flags take effect only
+    // after parsing completes.
     let mut flags = GlobalFlags {
-        insecure: args.iter().any(|a| a == "--insecure" || a == "insecure"),
-        fail_on_error: args.iter().any(|a| a == "fail"),
-        dry_run: args.iter().any(|a| a == "--dry-run" || a == "dry-run"),
+        insecure: false,
+        fail_on_error: false,
+        dry_run: false,
+        help: false,
+        version: false,
         retry: 0,
         until: None,
         delay_secs: 1,
@@ -116,7 +119,11 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
                 commands.push(Command::Url(url.to_string()));
                 verb_end = Some(commands.len());
             }
-            "fail" | "--insecure" | "insecure" | "--dry-run" | "dry-run" => {}
+            "fail" => flags.fail_on_error = true,
+            "--insecure" | "insecure" => flags.insecure = true,
+            "--dry-run" | "dry-run" => flags.dry_run = true,
+            "help" | "-h" | "--help" => flags.help = true,
+            "-V" | "--version" => flags.version = true,
             "--retry" => {
                 let value = tokens.value_for("--retry", "a number of retries")?;
                 flags.retry = value

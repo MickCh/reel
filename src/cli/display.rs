@@ -266,6 +266,8 @@ pub fn print_usage() {
         "         on matching requests. A manually set Cookie header always takes precedence."
     );
     eprintln!();
+    eprintln!("Redirects: not followed (like curl without -L) — a 3xx response is shown as-is.");
+    eprintln!();
     eprintln!(
         "Note: status messages and confirmations are written to stderr; response body goes to stdout."
     );
@@ -277,6 +279,20 @@ pub fn print_usage() {
 // POSIX single-quote: wrap in ', escaping embedded ' as '\''.
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+// Methods are normally plain tokens; quote only when copy-pasting the value
+// into a shell would otherwise split or interpret it.
+fn quote_method(method: &str) -> String {
+    if !method.is_empty()
+        && method
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        method.to_string()
+    } else {
+        shell_quote(method)
+    }
 }
 
 // The current request as an equivalent curl command — for sharing in issues,
@@ -291,7 +307,7 @@ pub(super) fn format_curl(request: &Request, insecure: bool) -> anyhow::Result<S
     // reel defaults to GET even with a body; curl would switch to POST on
     // --data, so spell the method out whenever a body is present.
     match (&request.method, &request.body) {
-        (Some(m), _) => parts.push(format!("-X {}", m)),
+        (Some(m), _) => parts.push(format!("-X {}", quote_method(m))),
         (None, Some(_)) => parts.push("-X GET".to_string()),
         (None, None) => {}
     }

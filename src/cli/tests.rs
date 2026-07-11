@@ -1338,6 +1338,168 @@ fn send_keeps_jar_but_clears_history() {
     assert_eq!(state.cookies.len(), 1);
 }
 
+// --- flags in value position ---
+
+#[test]
+fn flag_words_consumed_as_values_are_not_flags() {
+    // A token consumed as a command's value must never flip a global flag —
+    // `header X-Mode insecure` must not disable TLS verification.
+    let (cmds, flags) = parse_args(&args("header X-Mode insecure send")).unwrap();
+    assert!(!flags.insecure);
+    assert!(matches!(&cmds[0], Command::Header(k, v) if k == "X-Mode" && v == "insecure"));
+
+    let (cmds, flags) = parse_args(&args("body fail")).unwrap();
+    assert!(!flags.fail_on_error);
+    assert!(matches!(&cmds[0], Command::Body(b) if b == "fail"));
+
+    let (cmds, flags) = parse_args(&args("body -h")).unwrap();
+    assert!(!flags.help);
+    assert!(matches!(&cmds[0], Command::Body(b) if b == "-h"));
+}
+
+#[test]
+fn help_and_version_are_parser_flags() {
+    let (_, flags) = parse_args(&args("--help")).unwrap();
+    assert!(flags.help && !flags.version);
+    let (_, flags) = parse_args(&args("help")).unwrap();
+    assert!(flags.help);
+    let (_, flags) = parse_args(&args("send -V")).unwrap();
+    assert!(flags.version && !flags.help);
+}
+
+// --- retry classification ---
+
+#[test]
+fn does_not_retry_501() {
+    let http = MockHttp::sequence(vec![Ok(response(501, "no")), Ok(response(200, "ok"))]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    run("--retry 2 --delay 0 send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(http.seen.borrow().len(), 1);
+    assert_eq!(state.responses[0].status, 501);
+}
+
+#[test]
+fn permanent_error_is_not_retried() {
+    struct PermanentHttp {
+        calls: Cell<u32>,
+    }
+    impl HttpClient for PermanentHttp {
+        fn execute(
+            &self,
+            _request: &Request,
+            _source: Option<&str>,
+        ) -> anyhow::Result<ResponseRecord> {
+            self.calls.set(self.calls.get() + 1);
+            Err(anyhow::Error::new(crate::http::PermanentError(
+                "error: invalid URL 'nope'".to_string(),
+            )))
+        }
+    }
+
+    let http = PermanentHttp {
+        calls: Cell::new(0),
+    };
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("nope".to_string());
+
+    let err = run("--retry 3 --delay 0 send", &mut state, &http, &session).unwrap_err();
+
+    assert!(err.to_string().contains("invalid URL"), "{err}");
+    assert_eq!(http.calls.get(), 1, "permanent errors must not be retried");
+}
+
+#[test]
+fn until_condition_sees_candidate_request() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    let (cmds, flags) = parse_args(&[
+        s("--until"),
+        s("request.url == https://example.com"),
+        s("--delay"),
+        s("0"),
+        s("send"),
+    ])
+    .unwrap();
+    run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+
+    // The in-flight request is visible to the condition, so it passes on the
+    // first attempt instead of polling the whole budget.
+    assert_eq!(http.seen.borrow().len(), 1);
+}
+
+// --- chain failure persistence ---
+
+#[test]
+fn mutations_persist_when_chain_fails() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    // `expect status` fails (no previous response) after `url` mutated state.
+    let err = run(
+        "url https://example.com expect status",
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("no previous response"), "{err}");
+    let saved = session.last_saved.borrow();
+    let saved = saved.as_ref().expect("mutations should be saved on error");
+    assert_eq!(saved.request.url, Some("https://example.com".to_string()));
+}
+
+// --- load keeps the cookie jar ---
+
+#[test]
+fn load_preserves_cookie_jar() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut preset = State::default();
+    preset.request.url = Some("https://example.com".to_string());
+    let presets = MockPresets::with("p.json", preset);
+
+    let mut state = State::default();
+    state
+        .cookies
+        .push(jar_cookie("session", "abc", "example.com"));
+
+    run_with_presets("load p.json", &mut state, &http, &session, &presets).unwrap();
+
+    assert_eq!(state.request.url, Some("https://example.com".to_string()));
+    assert_eq!(state.cookies.len(), 1, "load must not clear the cookie jar");
+}
+
+// --- format_curl method quoting ---
+
+#[test]
+fn format_curl_quotes_unusual_method() {
+    let request = Request {
+        method: Some("GET;X".to_string()),
+        url: Some("https://example.com".to_string()),
+        ..Default::default()
+    };
+    let cmd = display::format_curl(&request, false).unwrap();
+    assert!(cmd.contains("-X 'GET;X'"), "{cmd}");
+}
+
 // --- format_size ---
 
 #[test]

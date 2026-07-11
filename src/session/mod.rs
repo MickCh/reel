@@ -442,10 +442,22 @@ impl PresetStore for FilePresetStore {
     }
 
     // Presets store only the request fields — never the request/response history.
+    // Written like session files: 0600 temp + rename (presets can carry
+    // Authorization headers), but an existing file keeps the permissions the
+    // user gave it.
     fn save(&self, request: &Request, path: &Path) -> Result<()> {
         let content = serde_json::to_string_pretty(request)?;
-        fs::write(path, content)
-            .map_err(|e| anyhow::anyhow!("error writing '{}': {}", path.display(), e))
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        write_private(&tmp, &content)
+            .map_err(|e| anyhow::anyhow!("error writing '{}': {}", path.display(), e))?;
+        #[cfg(unix)]
+        if let Ok(meta) = fs::metadata(path) {
+            let _ = fs::set_permissions(&tmp, meta.permissions());
+        }
+        fs::rename(&tmp, path).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            anyhow::anyhow!("error writing '{}': {}", path.display(), e)
+        })
     }
 }
 

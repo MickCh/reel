@@ -263,3 +263,28 @@ fn save_preset_stores_only_request_fields() {
     assert_eq!(loaded.request.url, Some("https://example.com".to_string()));
     fs::remove_dir_all(dir).ok();
 }
+
+#[cfg(unix)]
+#[test]
+fn save_preset_creates_private_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("reel_preset_mode_{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("preset.json");
+
+    let presets = FilePresetStore;
+    presets
+        .save(&crate::model::Request::default(), &path)
+        .unwrap();
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "new preset files can hold credentials");
+
+    // Overwriting keeps the permissions the user gave the file.
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    presets
+        .save(&crate::model::Request::default(), &path)
+        .unwrap();
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o644, "existing permissions are preserved");
+    fs::remove_dir_all(dir).ok();
+}

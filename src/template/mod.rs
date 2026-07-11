@@ -271,12 +271,16 @@ fn eval_function(name: &str, args: &str, ctx: &Context) -> Result<String> {
 //   request.headers.<name>     → header from the last request
 //   request[N].<field>         → field of the Nth request (1-based)
 fn eval_expr(expr: &str, ctx: &Context) -> Result<String> {
-    // Function call: name(args). No other expression form contains
-    // parentheses, so this cannot misfire on field paths.
+    // Function call: name(args). Only identifier-shaped names count — a
+    // parenthesis inside a field path (a JSON key like body.items(0)) must
+    // stay a path segment, not become a function call.
     if let Some(open) = expr.find('(')
         && let Some(args) = expr[open + 1..].strip_suffix(')')
     {
-        return eval_function(expr[..open].trim_end(), args.trim(), ctx);
+        let name = expr[..open].trim_end();
+        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return eval_function(name, args.trim(), ctx);
+        }
     }
 
     // Environment variables — independent of request/response history.

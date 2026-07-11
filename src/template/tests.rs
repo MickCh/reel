@@ -657,3 +657,21 @@ fn elapsed_expression_resolves() {
     );
     assert!(check_condition("elapsed == 142", &ctx).is_ok());
 }
+
+// --- parentheses in field paths ---
+
+#[test]
+fn paren_in_json_key_is_a_path_segment_not_a_function() {
+    let r = record(200, r#"{"items(0)":"x"}"#, &[]);
+    assert_eq!(interp("${{ body.items(0) }}", &[r]).unwrap(), "x");
+}
+
+#[test]
+fn unknown_function_with_identifier_name_is_still_an_error() {
+    let r = record(200, "{}", &[]);
+    let err = interp("${{ md5('x') }}", &[r]).unwrap_err();
+    assert!(
+        err.to_string().contains("unknown template function"),
+        "{err}"
+    );
+}

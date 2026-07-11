@@ -32,6 +32,12 @@ pub enum SetCookie {
 // RFC 6265 domain-match: the host is identical to the domain, or the domain
 // is a dot-preceded suffix of it. Suffix matching never applies when the host
 // is an IP address ("0.0.1" must not match host "127.0.0.1").
+//
+// Deliberate simplification: no public-suffix list, so a response from
+// foo.co.uk may set Domain=co.uk. Browsers reject that to isolate unrelated
+// sites sharing a registry suffix; for a per-session CLI jar that only holds
+// cookies from hosts the user chose to call, the risk does not justify the
+// dependency.
 fn domain_match(host: &str, domain: &str) -> bool {
     host == domain
         || (!is_ip_address(host)
