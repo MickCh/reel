@@ -379,19 +379,22 @@ fn try_load(path: &Path) -> Result<SessionFile, String> {
 // and for leftover .tmp files from interrupted saves.
 const MAX_UNVERIFIED_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
-pub fn cleanup_old_sessions() {
+pub fn cleanup_old_sessions(current_session: &Path) {
     let Ok(dir) = sessions_dir() else { return };
     let cutoff = SystemTime::now()
         .checked_sub(MAX_UNVERIFIED_AGE)
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    cleanup_dir(&dir, cutoff);
+    cleanup_dir(&dir, cutoff, current_session);
 }
 
 // PID-keyed session files are removed as soon as their process is gone —
 // a session should not outlive its shell, and a live shell's session is
 // never removed no matter how old (think week-long tmux sessions). Files
-// whose owner cannot be verified fall back to the age rule.
-fn cleanup_dir(dir: &Path, cutoff: SystemTime) {
+// whose owner cannot be verified fall back to the age rule. The session this
+// invocation is about to use is always exempt — a named session that was
+// only read (never saved) for over a week must not be deleted right before
+// its own load.
+fn cleanup_dir(dir: &Path, cutoff: SystemTime, current: &Path) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -399,6 +402,9 @@ fn cleanup_dir(dir: &Path, cutoff: SystemTime) {
 
     for entry in entries.flatten() {
         let path = entry.path();
+        if path == current {
+            continue;
+        }
         let stale = match path.extension().and_then(|e| e.to_str()) {
             Some("json") => session_file_stale(&path, &entry, cutoff),
             Some("tmp") => older_than(&entry, cutoff),

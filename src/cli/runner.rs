@@ -58,7 +58,10 @@ fn transient_5xx(status: u16) -> bool {
 }
 
 // Shared execution path of `send` and `then`: run the request, record it in
-// the history, persist the session, print the result, and honour `fail`.
+// the history, persist the session, and print the result. `fresh_history` is
+// the `send` semantics — the previous history is replaced, but only once an
+// attempt actually produced a response, so a failed send cannot wipe it.
+// A 4xx/5xx result is remembered in `chain` for the deferred `fail` verdict.
 // `session.save()` must come before any stdout write — broken-pipe safety.
 fn execute_and_record(
     state: &mut State,
@@ -66,17 +69,20 @@ fn execute_and_record(
     http: &dyn HttpClient,
     session: &dyn SessionStore,
     source: Option<&str>,
-    status_note: Option<&str>,
+    fresh_history: bool,
+    chain: &mut ChainState,
 ) -> Result<()> {
     if state.request.body.is_some() && state.request.headers.get("content-type").is_none() {
         eprintln!("warning: body is set but Content-Type header is missing");
     }
+    let cleared_note =
+        (fresh_history && !state.responses.is_empty()).then_some("previous responses cleared");
 
     // Attempt budget: --retry N gives N extra attempts; polling with --until
     // alone gets a default budget of 10 attempts.
     let max_attempts = match (&flags.until, flags.retry) {
         (Some(_), 0) => 10,
-        (_, retry) => retry + 1,
+        (_, retry) => retry.saturating_add(1),
     };
     let mut attempt = 1u32;
     // Set when --until exhausts its budget: the last response is still
@@ -90,21 +96,29 @@ fn execute_and_record(
         let reason = match http.execute(&request, source) {
             Ok(record) => {
                 // Every attempt's cookies enter the jar, not just the final
-                // one — servers rotate session cookies mid-poll.
+                // one — servers rotate session cookies mid-poll. Marking the
+                // state modified lets the end-of-run best-effort save keep
+                // them even when a later attempt fails the whole chain.
                 if let Some((host, path, _)) = url_parts(request.url.as_deref()) {
                     for raw in &record.set_cookies {
                         if let Some(update) = parse_set_cookie(raw, &host, &path) {
                             update_jar(&mut state.cookies, update);
+                            chain.modified = true;
                         }
                     }
                 }
                 if let Some(condition) = &flags.until {
                     // Evaluate against the history as it would look with this
                     // attempt appended — both vectors, so `request.*` refers
-                    // to the in-flight request and indices stay aligned.
-                    let mut requests = state.requests.clone();
+                    // to the in-flight request and indices stay aligned. A
+                    // send starts a fresh history, so only the candidate is
+                    // visible to the condition.
+                    let (mut requests, mut responses) = if fresh_history {
+                        (Vec::new(), Vec::new())
+                    } else {
+                        (state.requests.clone(), state.responses.clone())
+                    };
                     requests.push(request.clone());
-                    let mut responses = state.responses.clone();
                     responses.push(record.clone());
                     let ctx = Context {
                         requests: &requests,
@@ -144,6 +158,10 @@ fn execute_and_record(
         );
         std::thread::sleep(std::time::Duration::from_secs(flags.delay_secs));
     };
+    if fresh_history {
+        state.requests.clear();
+        state.responses.clear();
+    }
     state.requests.push(request);
     state.responses.push(record);
     session.save(state)?;
@@ -153,14 +171,16 @@ fn execute_and_record(
         format!("{} ms", last.elapsed_ms),
         format_size(last.body.len()),
     ];
-    notes.extend(status_note.map(str::to_string));
+    notes.extend(cleared_note.map(str::to_string));
     eprintln!("< {} ({})", format_status(last.status), notes.join(", "));
     print_body(&last.body, true);
+    if last.status >= 400 {
+        // The `fail` verdict is delivered after the whole chain has run —
+        // remember the first failing status until then.
+        chain.http_failure.get_or_insert(last.status);
+    }
     if let Some(e) = until_error {
         return Err(e);
-    }
-    if flags.fail_on_error && last.status >= 400 {
-        bail!("error: request failed with status {}", last.status);
     }
     Ok(())
 }
@@ -172,6 +192,9 @@ struct ChainState {
     modified: bool,
     do_show: bool,
     do_response: Option<(ResponseTarget, ResponseView)>,
+    // First 4xx/5xx status received by a send/then — `fail` turns it into a
+    // failing exit after the whole chain has completed.
+    http_failure: Option<u16>,
 }
 
 pub fn run_commands(
@@ -196,6 +219,13 @@ pub fn run_commands(
         }
     }
     outcome?;
+    // `fail` verdict comes last: every command has run and the session is
+    // saved — only the exit code changes.
+    if flags.fail_on_error
+        && let Some(status) = chain.http_failure
+    {
+        bail!("error: request failed with status {}", status);
+    }
     Ok(ParseResult {
         do_show: chain.do_show,
         do_response: chain.do_response,
@@ -218,11 +248,7 @@ fn run_all(
                     print_dry_run(&with_session_cookies(&state.request, &state.cookies));
                     continue;
                 }
-                let had_responses = !state.responses.is_empty();
-                state.requests.clear();
-                state.responses.clear();
-                let note = had_responses.then_some("previous responses cleared");
-                execute_and_record(state, flags, http, session, None, note)?;
+                execute_and_record(state, flags, http, session, None, true, chain)?;
                 chain.modified = false;
             }
             Command::Then(path) => {
@@ -248,7 +274,7 @@ fn run_all(
                     continue;
                 }
 
-                execute_and_record(state, flags, http, session, Some(&path_str), None)?;
+                execute_and_record(state, flags, http, session, Some(&path_str), false, chain)?;
                 chain.modified = false;
             }
             Command::Expect(condition) => {

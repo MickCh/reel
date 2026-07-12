@@ -203,7 +203,7 @@ pub fn print_usage() {
     );
     eprintln!("  reset                  clear the session state");
     eprintln!("  load <PATH>            load state from a JSON file");
-    eprintln!("  save <PATH>            save current session state to a JSON file");
+    eprintln!("  save <PATH>            save the current request to a JSON preset file");
     eprintln!(
         "  fail                   exit with code 1 if any response is 4xx/5xx (position-independent)"
     );

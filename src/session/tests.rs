@@ -205,7 +205,7 @@ fn cleanup_removes_dead_pid_sessions() {
     let dead = dir.join("999999999.json");
     fs::write(&dead, "{}").unwrap();
     // Cutoff in the distant past: age alone would keep the file.
-    cleanup_dir(&dir, SystemTime::UNIX_EPOCH);
+    cleanup_dir(&dir, SystemTime::UNIX_EPOCH, Path::new(""));
     assert!(!dead.exists());
     fs::remove_dir_all(dir).ok();
 }
@@ -217,7 +217,7 @@ fn cleanup_keeps_live_pid_sessions_regardless_of_age() {
     let alive = dir.join(format!("{}.json", std::process::id()));
     fs::write(&alive, "{}").unwrap();
     // Cutoff in the future: age alone would delete the file.
-    cleanup_dir(&dir, future_cutoff());
+    cleanup_dir(&dir, future_cutoff(), Path::new(""));
     assert!(alive.exists());
     fs::remove_dir_all(dir).ok();
 }
@@ -233,12 +233,30 @@ fn cleanup_applies_age_rule_to_unverifiable_files() {
         fs::write(path, "{}").unwrap();
     }
 
-    cleanup_dir(&dir, SystemTime::UNIX_EPOCH);
+    cleanup_dir(&dir, SystemTime::UNIX_EPOCH, Path::new(""));
     assert!(named.exists() && zero.exists() && tmp.exists() && other.exists());
 
-    cleanup_dir(&dir, future_cutoff());
+    cleanup_dir(&dir, future_cutoff(), Path::new(""));
     assert!(!named.exists() && !zero.exists() && !tmp.exists());
     assert!(other.exists(), "non-session files are never touched");
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn cleanup_spares_the_current_session() {
+    let dir = temp_dir();
+    let current = dir.join("named-active.json");
+    let other = dir.join("named-idle.json");
+    fs::write(&current, "{}").unwrap();
+    fs::write(&other, "{}").unwrap();
+
+    // Cutoff in the future: the age rule alone would delete both.
+    cleanup_dir(&dir, future_cutoff(), &current);
+    assert!(
+        current.exists(),
+        "the session in use must never be cleaned up"
+    );
+    assert!(!other.exists());
     fs::remove_dir_all(dir).ok();
 }
 

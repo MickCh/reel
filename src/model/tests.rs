@@ -106,6 +106,47 @@ fn state_deserializes_plain_string_body() {
     assert_eq!(s.request.body.as_deref(), Some("hello world"));
 }
 
+fn body_round_trip(body: &str) -> Option<String> {
+    let mut s = State::default();
+    s.request.body = Some(body.to_string());
+    let json = serde_json::to_string(&s).unwrap();
+    let restored: State = serde_json::from_str(&json).unwrap();
+    restored.request.body
+}
+
+#[test]
+fn body_round_trips_byte_exact() {
+    // Bodies whose native-JSON form would come back different must be stored
+    // as plain strings: a JSON string literal (would lose its quotes), null
+    // (would become no body), non-canonical key order, non-canonical number
+    // notation, pretty-printed JSON, and plain text.
+    for body in [
+        r#""hello""#,
+        "null",
+        r#"{"b":1,"a":2}"#,
+        "1e3",
+        "{\n  \"a\": 1\n}",
+        "plain text",
+    ] {
+        assert_eq!(body_round_trip(body).as_deref(), Some(body), "{body:?}");
+    }
+}
+
+#[test]
+fn body_canonical_json_is_stored_natively() {
+    let mut s = State::default();
+    s.request.body = Some(r#"{"a":2,"b":1}"#.to_string());
+    let json = serde_json::to_string(&s).unwrap();
+    assert!(
+        json.contains(r#""body":{"a":2,"b":1}"#),
+        "canonical JSON body should be embedded as a native value: {json}"
+    );
+    assert_eq!(
+        body_round_trip(r#"{"a":2,"b":1}"#).as_deref(),
+        Some(r#"{"a":2,"b":1}"#)
+    );
+}
+
 #[test]
 fn state_deserializes_escaped_json_string_body() {
     let json = r#"{"url":"https://x.com","body":"{\"field\":\"value\"}"}"#;

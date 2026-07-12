@@ -384,6 +384,17 @@ fn condition_contains() {
 }
 
 #[test]
+fn condition_expr_with_quoted_space() {
+    let ctx = Context {
+        requests: &[],
+        responses: &[],
+    };
+    // The literal's space must not be taken as the expression/operator split.
+    assert!(check_condition("base64('user pass') == dXNlciBwYXNz", &ctx).is_ok());
+    assert!(check_condition("base64('user pass') == wrong", &ctx).is_err());
+}
+
+#[test]
 fn condition_unknown_operator_is_error() {
     let responses = [record(200, "{}", &[])];
     let ctx = Context {

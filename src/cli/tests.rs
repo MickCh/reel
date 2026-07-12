@@ -388,6 +388,82 @@ fn fail_flag_on_4xx_returns_err() {
 }
 
 #[test]
+fn fail_flag_verdict_comes_after_the_whole_chain() {
+    // A 4xx with `fail` must not abort the chain — the remaining `then`
+    // still runs; only the final result is an error.
+    let http = MockHttp::sequence(vec![Ok(response(404, "{}")), Ok(response(200, "{}"))]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+    let mut preset = State::default();
+    preset.request.url = Some("https://example.com/next".to_string());
+    let presets = MockPresets::with("b.json", preset);
+
+    let result = run_with_presets(
+        "fail send then b.json",
+        &mut state,
+        &http,
+        &session,
+        &presets,
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        http.seen.borrow().len(),
+        2,
+        "then must still run after a 4xx when fail is set"
+    );
+    assert_eq!(state.responses.len(), 2);
+}
+
+#[test]
+fn failed_send_preserves_history() {
+    let http = MockHttp::err();
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+    state.requests.push(Request::default());
+    state.responses.push(response(200, "old"));
+
+    // The `url` mutation makes the end-of-run best-effort save run — it must
+    // not persist a wiped history.
+    assert!(
+        run(
+            "url https://example.com/x send",
+            &mut state,
+            &http,
+            &session
+        )
+        .is_err()
+    );
+    assert_eq!(
+        state.responses.len(),
+        1,
+        "failed send must not clear history"
+    );
+    let saved = session.last_saved.borrow();
+    assert_eq!(saved.as_ref().unwrap().responses.len(), 1);
+}
+
+#[test]
+fn mid_retry_cookies_survive_a_failed_chain() {
+    // Attempt 1 gets a transient 500 carrying a Set-Cookie; attempt 2 fails
+    // with a network error. The rotated cookie must still reach the session.
+    let http =
+        MockHttp::sequence(vec![Ok(response(500, "{}")), Err(())]).with_set_cookies(&["sid=abc"]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    assert!(run("--retry 1 --delay 0 send", &mut state, &http, &session).is_err());
+    let saved = session.last_saved.borrow();
+    let cookies = &saved
+        .as_ref()
+        .expect("jar update must trigger a save")
+        .cookies;
+    assert!(cookies.iter().any(|c| c.name == "sid" && c.value == "abc"));
+}
+
+#[test]
 fn fail_flag_on_2xx_succeeds() {
     let http = MockHttp::ok(200);
     let session = MockSession::default();

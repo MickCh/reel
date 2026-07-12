@@ -42,7 +42,6 @@ fn main() {
         return;
     }
 
-    session::cleanup_old_sessions();
     let session = match session::FileSessionStore::new() {
         Ok(session) => session,
         Err(e) => {
@@ -50,6 +49,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // After the store is constructed (so its own session file is exempt),
+    // before load.
+    session::cleanup_old_sessions(session.path());
     let mut state = session.load();
 
     let http = match http::ReqwestClient::new(flags.insecure) {

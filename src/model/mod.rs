@@ -9,6 +9,22 @@ mod body_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use serde_json::Value;
 
+    // A body is stored as a native JSON value only when reloading that value
+    // yields the exact original string. Anything lossy — pretty-printed JSON,
+    // non-canonical key order, "1e3"-style numbers, JSON string/null literals
+    // — is stored as a plain string instead, so the bytes the user set are
+    // the bytes sent, even across invocations.
+    fn round_trips(value: &Value, original: &str) -> bool {
+        match value {
+            // A string would come back without its quotes; a null would come
+            // back as no body at all.
+            Value::String(_) | Value::Null => false,
+            // Deliberately compares the compact serialization, not the value
+            // (`Value == &str` would compare string contents instead).
+            other => other.to_string().as_str() == original,
+        }
+    }
+
     pub fn serialize<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -16,8 +32,8 @@ mod body_serde {
         match value {
             None => serializer.serialize_none(),
             Some(s) => match serde_json::from_str::<Value>(s) {
-                Ok(v) => v.serialize(serializer),
-                Err(_) => serializer.serialize_str(s),
+                Ok(v) if round_trips(&v, s) => v.serialize(serializer),
+                _ => serializer.serialize_str(s),
             },
         }
     }

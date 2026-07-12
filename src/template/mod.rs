@@ -322,18 +322,17 @@ fn eval_expr(expr: &str, ctx: &Context) -> Result<String> {
 //   <expr> != <value>          → string inequality
 //   <expr> contains <value>    → substring match
 //
-// `<expr>` is any template expression (no `${{ }}` wrapper); expressions never
-// contain whitespace, so the first whitespace separates it from the operator.
+// `<expr>` is any template expression (no `${{ }}` wrapper); the first
+// whitespace outside single quotes separates it from the operator — the
+// expression itself may contain a quoted literal with spaces, e.g.
+// `base64('user pass') == <v>`.
 pub fn check_condition(condition: &str, ctx: &Context) -> Result<()> {
     let condition = condition.trim();
     if condition.is_empty() {
         bail!("empty expect condition");
     }
 
-    let (expr, rest) = match condition.split_once(char::is_whitespace) {
-        Some((expr, rest)) => (expr, rest.trim_start()),
-        None => (condition, ""),
-    };
+    let (expr, rest) = split_condition(condition);
     let actual = eval_expr(expr, ctx).map_err(|e| anyhow::anyhow!("expect '{}': {}", expr, e))?;
 
     if rest.is_empty() {
@@ -356,6 +355,23 @@ pub fn check_condition(condition: &str, ctx: &Context) -> Result<()> {
         bail!("expect failed: {} (actual: {})", condition, actual);
     }
     Ok(())
+}
+
+// Split an expect condition into expression and operator part at the first
+// whitespace outside single quotes (quotes shield literals like
+// base64('user pass')).
+fn split_condition(condition: &str) -> (&str, &str) {
+    let mut in_quotes = false;
+    for (i, c) in condition.char_indices() {
+        match c {
+            '\'' => in_quotes = !in_quotes,
+            c if c.is_whitespace() && !in_quotes => {
+                return (&condition[..i], condition[i + c.len_utf8()..].trim_start());
+            }
+            _ => {}
+        }
+    }
+    (condition, "")
 }
 
 // Split `expr | default: value` at the first '|' outside single quotes
