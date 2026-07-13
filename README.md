@@ -75,6 +75,8 @@ Commands can be combined freely in a single invocation.
 | `header-rm-all` | Remove all headers |
 | `body <BODY>` | Set request body |
 | `body @<PATH>` / `body -` | Set request body from a file / from stdin (`@@` escapes a body that starts with a literal `@`) |
+| `var <NAME> <VALUE>` | Set a session variable, readable in templates as `${{ var.NAME }}` |
+| `var-rm <NAME>` | Remove a session variable |
 | `send` | Send the request using current session state |
 | `get`/`post`/`put`/`patch`/`delete`/`head`/`options` `<URL>` | Shortcut: set method + URL and send |
 | `expect <CONDITION>` | Assert on the last response; abort with exit code 1 on failure |
@@ -231,6 +233,7 @@ Supported expressions in preset files:
 | `${{ request.headers.name }}` | A header value from the last request (case-insensitive) |
 | `${{ request[N].url }}` | Any `request` field for the Nth request (1-based) |
 | `${{ env.NAME }}` | Value of the environment variable `NAME` |
+| `${{ var.name }}` | [Session variable](#session-variables) set with `reel var name <value>` |
 | `${{ uuid() }}` | A random v4 UUID (fresh per placeholder — handy for idempotency keys) |
 | `${{ now() }}` / `${{ now(+3600) }}` | Current Unix timestamp in seconds, optionally shifted |
 | `${{ base64('user:pass') }}` / `${{ base64(env.CREDS) }}` | Base64 of a quoted literal or of a nested expression (e.g. for Basic auth) |
@@ -335,6 +338,34 @@ API_TOKEN=sk-live-... reel load create.json send then confirm.json
 
 If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index, or unset environment variable) the chain aborts immediately with an error.
 
+### Session variables
+
+`var` stores a named value in the session, and templates read it back with `${{ var.name }}` — like `${{ env.NAME }}`, but scoped to the terminal window instead of the process environment, and persisted across invocations. Use it to parametrize presets without exporting environment variables:
+
+```bash
+reel var host api.example.com
+reel var token sk-live-abc123
+reel then create_order.json       # preset uses ${{ var.host }} and ${{ var.token }}
+```
+
+`create_order.json`:
+
+```json
+{
+  "method": "POST",
+  "url": "https://${{ var.host }}/orders",
+  "headers": { "Authorization": "Bearer ${{ var.token }}" }
+}
+```
+
+Details:
+
+- Names are case-sensitive, 1+ characters from `A-Za-z0-9_-` (so they always fit inside a `${{ var.name }}` placeholder). Setting an existing name overwrites it; `var-rm` deletes it.
+- Values are literal — they are not interpolated when set. To pull a value from a response, reference the history directly in the preset (`${{ body.token }}`, `${{ response[1].body.id }}`).
+- Like the cookie jar, variables belong to the session: they survive `send` and `load`, are cleared by `reset`, are shown by `show`, and are never written to preset files by `save`.
+- Variables are independent of request history, so a preset using only `${{ var.* }}` works as the first request in a chain.
+- `${{ var.name | default: fallback }}` works like any other expression, and `expect`/`--until` conditions can read variables too (`expect 'var.stage == prod'`).
+
 ### Assertions with `expect`
 
 `expect` turns reel into a lightweight API test runner: it evaluates a condition against the response history and aborts the command chain (exit code 1) when it fails. The condition uses the same expressions as templates, without the `${{ }}` wrapper:
@@ -346,7 +377,7 @@ reel send expect 'headers.content-type contains json'
 reel load login.json send expect 'status == 200' then create.json expect 'status == 201'
 ```
 
-Supported forms: `<expr>` (must resolve), `<expr> == <value>`, `<expr> != <value>`, `<expr> contains <value>`. Any template expression works, including `response[N].*`, `request.*`, and `env.*`. A failing `expect` stops later commands from running — useful in CI scripts and as a guard before a destructive `then` step.
+Supported forms: `<expr>` (must resolve), `<expr> == <value>`, `<expr> != <value>`, `<expr> contains <value>`. Any template expression works, including `response[N].*`, `request.*`, `env.*`, and `var.*`. A failing `expect` stops later commands from running — useful in CI scripts and as a guard before a destructive `then` step.
 
 ### Retrying and polling
 
@@ -431,7 +462,7 @@ Sessions are stored as plain JSON and can be edited or version-controlled:
 }
 ```
 
-The `responses` array is written automatically after each `send` (each record carries its `elapsed_ms` duration) and can be omitted when creating preset files — it will be populated on first use. The `cookies` array is the session's cookie jar, populated from `Set-Cookie` responses; it is never written to preset files. PID-keyed session files also carry an `owner_start_time` field identifying the owning shell; it is ignored in preset files.
+The `responses` array is written automatically after each `send` (each record carries its `elapsed_ms` duration) and can be omitted when creating preset files — it will be populated on first use. The `cookies` array is the session's cookie jar, populated from `Set-Cookie` responses; it is never written to preset files. Session variables set with `reel var` appear as a `vars` object (`"vars": { "host": "api.example.com" }`) — also session-only, never written by `save`. PID-keyed session files also carry an `owner_start_time` field identifying the owning shell; it is ignored in preset files.
 
 > **Note:** Session files and preset files store credentials (e.g. `Authorization` headers) in plaintext (session files are created with `0600` permissions on Unix). Avoid committing preset files that contain real tokens to version control.
 

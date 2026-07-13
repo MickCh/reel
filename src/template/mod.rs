@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Result, bail};
 
 use crate::model::{Request, ResponseRecord};
@@ -5,10 +7,12 @@ use crate::model::{Request, ResponseRecord};
 // The data a template can interpolate against: the request/response history of
 // the current session. Bare `body`/`status`/`headers.*` refer to the last
 // response; `request.*`/`request[N].*` reach the captured requests; `env.*`
-// reads process environment variables (independent of history).
+// reads process environment variables and `var.*` the session variables set
+// with `reel var` (both independent of history).
 pub struct Context<'a> {
     pub requests: &'a [Request],
     pub responses: &'a [ResponseRecord],
+    pub vars: &'a HashMap<String, String>,
 }
 
 // Marker for "the expression is well-formed but the data it references is
@@ -259,6 +263,7 @@ fn eval_function(name: &str, args: &str, ctx: &Context) -> Result<String> {
 // Supported forms:
 //   uuid() / now() / base64(<arg>) → template functions (see eval_function)
 //   env.<NAME>                 → process environment variable
+//   var.<name>                 → session variable set with `reel var`
 //   status                     → status of the last response
 //   body                       → raw body of the last response
 //   body.<path>                → dot-path into the last response body
@@ -287,6 +292,16 @@ fn eval_expr(expr: &str, ctx: &Context) -> Result<String> {
     if let Some(name) = expr.strip_prefix("env.") {
         return std::env::var(name)
             .map_err(|_| unresolvable(format!("environment variable '{}' not set", name)));
+    }
+
+    // Session variables — like env.*, independent of history. Case-sensitive.
+    if let Some(name) = expr.strip_prefix("var.") {
+        return ctx.vars.get(name).cloned().ok_or_else(|| {
+            unresolvable(format!(
+                "variable '{}' not set (set it with: reel var {} <VALUE>)",
+                name, name
+            ))
+        });
     }
 
     // Request history: request.<field> (last) or request[N].<field> (1-based).

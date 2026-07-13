@@ -102,6 +102,11 @@ pub fn show_state(state: &State, session: &dyn SessionStore) {
             .unwrap_or_else(|_| body.clone());
         eprintln!("  body    {}", formatted.replace('\n', "\n          "));
     }
+    let mut vars: Vec<_> = state.vars.iter().collect();
+    vars.sort_by_key(|(k, _)| k.as_str());
+    for (k, v) in vars {
+        eprintln!("  var     {}={}", k, v);
+    }
     for c in &state.cookies {
         eprintln!("  cookie  {}={}  ({}{})", c.name, c.value, c.domain, c.path);
     }
@@ -177,6 +182,10 @@ pub fn print_usage() {
     eprintln!(
         "  body @<PATH> / body -  set request body from a file / from stdin (@@ escapes a literal @)"
     );
+    eprintln!(
+        "  var <NAME> <VALUE>     set a session variable (read in templates as ${{{{ var.NAME }}}})"
+    );
+    eprintln!("  var-rm <NAME>          remove a session variable");
     eprintln!("  send                   send the current request");
     eprintln!(
         "  get/post/put/patch/delete/head/options <URL>   shortcut: set method + URL and send"
@@ -236,6 +245,7 @@ pub fn print_usage() {
     eprintln!("  ${{{{ request.headers.name }}}}    header value from the last request");
     eprintln!("  ${{{{ request[N].url }}}}          field of the Nth request (1-based)");
     eprintln!("  ${{{{ env.NAME }}}}                value of environment variable NAME");
+    eprintln!("  ${{{{ var.name }}}}                session variable set with 'reel var'");
     eprintln!("  ${{{{ uuid() }}}}                  random v4 UUID");
     eprintln!(
         "  ${{{{ now() }}}} / ${{{{ now(+N) }}}}     Unix timestamp, optionally shifted by N seconds"
@@ -258,6 +268,7 @@ pub fn print_usage() {
     eprintln!("  reel response all");
     eprintln!("  reel fail send  # exits 1 on 4xx/5xx");
     eprintln!("  reel send expect 'status == 200' expect 'body.token'");
+    eprintln!("  reel var host staging.example.com  # then use ${{{{ var.host }}}} in presets");
     eprintln!();
     eprintln!(
         "Cookies: Set-Cookie responses are stored in the session and sent back automatically"

@@ -99,6 +99,7 @@ struct State {
     requests:  Vec<Request>,       // populated by send/then, never set by the user
     responses: Vec<ResponseRecord>,// populated by send/then, never set by the user
     cookies:   Vec<Cookie>,        // cookie jar — populated from Set-Cookie responses
+    vars:      HashMap<String, String>, // session variables — set by the user via `var`
 }
 
 struct ResponseRecord {
@@ -127,16 +128,18 @@ All case-insensitive header semantics (lookup, insert dedup, removal) live in `H
 1. `FileSessionStore::new()` computes the session path (`REEL_SESSION` name or PPID) and, for PID-keyed sessions, the parent's start time; `session.load()` reads the file (or returns `State::default()`; a stale ownership stamp also yields a fresh default)
 2. `parse_args` processes all CLI arguments left-to-right and returns `(Vec<Command>, GlobalFlags)`; no I/O here
 3. `run_commands` executes commands in order, mutating `state`:
-   - `load <PATH>` — replaces `state` wholesale from a JSON file, except the cookie jar: the session's cookies survive `load` (like they survive `send`) unless the loaded file itself carries a `cookies` field
+   - `load <PATH>` — replaces `state` wholesale from a JSON file, except the cookie jar and session variables: the session's cookies and vars survive `load` (like they survive `send`) unless the loaded file itself carries a `cookies`/`vars` field
    - `save <PATH>` — writes the current in-memory `state.request` to a preset file (never `requests`/`responses`); a write failure aborts the chain with an error
    - `reset` — replaces `state` with `State::default()` and calls `session.delete()`
    - `header <KEY:VALUE>` — `Headers::insert`: key stored as-is (original casing preserved); deduplication on insert is case-insensitive
    - `header-rm <KEY>` — `Headers::remove` (case-insensitive); warns if absent
    - `header-rm-all` — removes all entries from `state.request.headers`
+   - `var <NAME> <VALUE>` — sets `state.vars[NAME]` (overwrite on repeat; names are case-sensitive). Names are validated in the parser: 1+ chars from `[A-Za-z0-9_-]`, so they stay usable inside a `${{ var.<name> }}` placeholder. Values are stored literally (no interpolation — CLI values are literal everywhere; only preset files interpolate)
+   - `var-rm <NAME>` — removes a session variable; warns if absent
    - `method`, `url`, `body` — overwrite the respective `state.request` field; `url ""` (empty string) is rejected with an error. `body` values are resolved by `resolve_body` in `cli/runner.rs` (not in the parser, which stays I/O-free): `-` reads stdin, `@path` reads a file verbatim, `@@...` escapes a literal leading `@`
    - `send` — executes via `http.execute()` and replaces the history: `state.requests`/`state.responses` are cleared only once an attempt actually produced a response, then the new snapshot is pushed — a failed send leaves the previous history untouched (in memory and on disk); calls `session.save()` before printing body
    - `curl` — prints the current request as an equivalent curl command (`format_curl` in `cli/display.rs`; goes through `with_session_cookies`, so the jar is reflected). Output on stdout — it is data, not a diagnostic. Not a mutation; does not touch the HTTP layer
-   - `expect <CONDITION>` — asserts against the session history via `template::check_condition` (which reuses `eval_expr`, so any template expression works: `status`, `body.<path>`, `headers.<name>`, `response[N].*`, `request.*`, `env.*`). Forms: bare `<expr>` (must resolve), `<expr> == <v>`, `<expr> != <v>`, `<expr> contains <v>`. Failure aborts the chain with exit code 1; success prints `expect ok: ...` to stderr. Skipped under `--dry-run`
+   - `expect <CONDITION>` — asserts against the session history via `template::check_condition` (which reuses `eval_expr`, so any template expression works: `status`, `body.<path>`, `headers.<name>`, `response[N].*`, `request.*`, `env.*`, `var.*`). Forms: bare `<expr>` (must resolve), `<expr> == <v>`, `<expr> != <v>`, `<expr> contains <v>`. Failure aborts the chain with exit code 1; success prints `expect ok: ...` to stderr. Skipped under `--dry-run`
    - `then <PATH>` — replaces `state.request` from a preset file (history stays in place), applies template interpolation against the full request/response history (plus environment variables), executes via `http.execute()`, and appends the interpolated request snapshot and response to `state.requests`/`state.responses`; aborts the whole chain on failure. Interpolation runs unconditionally; a placeholder that references missing history (e.g. `${{ body }}` with no previous response) or a missing env var aborts the chain with an error. Env-only presets (`${{ env.* }}`) work even with no prior response.
 
    The shared execution path of `send`/`then` (execute → record history → `session.save()` → print → honour `fail`) lives in the `execute_and_record` helper in `cli/runner.rs`. The "body set but Content-Type missing" warning is also emitted there, not in the HTTP layer.
@@ -174,6 +177,7 @@ Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `
 | `request.headers.<name>` | Request header value from the last request (case-insensitive) |
 | `request[N].<field>` | Any of the above `request` fields for the Nth request (1-based) |
 | `env.<NAME>` | Value of environment variable `NAME` |
+| `var.<name>` | Session variable set with `reel var <name> <value>` (case-sensitive) |
 | `uuid()` | Random v4 UUID (each placeholder evaluated independently) |
 | `now()` / `now(±N)` | Current Unix timestamp in seconds, optionally shifted by N seconds |
 | `base64(<arg>)` | Base64 of the argument: a single-quoted literal (`base64('user:pass')`) or a nested expression (`base64(env.CREDS)`), evaluated recursively |
@@ -181,7 +185,7 @@ Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `
 
 The bare `body`/`status`/`headers.*` forms always refer to the **last** response; bare `request.*` refers to the **last** request. Use `response[N].*` / `request[N].*` to reach any earlier entry in the chain by 1-based index. Requests and responses share the same 1-based index (`request[N]` is the request that produced `response[N]`). Request records are captured *after* interpolation, so `request.*` reflects the values actually sent.
 
-`env.*` reads the process environment and is independent of history, so a preset that only uses `${{ env.* }}` interpolates successfully even with no previous request/response.
+`env.*` reads the process environment and `var.*` the session's `vars` map; both are independent of history, so a preset that only uses `${{ env.* }}`/`${{ var.* }}` interpolates successfully even with no previous request/response. Like the cookie jar, `vars` survive `send` and `load` and are cleared only by `reset`; `save` never writes them to preset files (it writes only the request).
 
 If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index, unset environment variable, unclosed `${{`), the chain aborts immediately with an error. Interpolation is always attempted; a placeholder referencing history that does not exist yet (e.g. `${{ body }}` before any `send`) aborts with a "no previous response/request" error rather than being treated as a literal string.
 

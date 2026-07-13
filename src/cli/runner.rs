@@ -123,6 +123,7 @@ fn execute_and_record(
                     let ctx = Context {
                         requests: &requests,
                         responses: &responses,
+                        vars: &state.vars,
                     };
                     if check_condition(condition, &ctx).is_ok() {
                         break (request, record);
@@ -264,6 +265,7 @@ fn run_all(
                 let ctx = Context {
                     requests: &state.requests,
                     responses: &state.responses,
+                    vars: &state.vars,
                 };
                 apply_interpolation(&mut state.request, &ctx)
                     .map_err(|e| anyhow::anyhow!("error in '{}': {}", path_str, e))?;
@@ -285,6 +287,7 @@ fn run_all(
                 let ctx = Context {
                     requests: &state.requests,
                     responses: &state.responses,
+                    vars: &state.vars,
                 };
                 check_condition(&condition, &ctx).map_err(|e| anyhow::anyhow!("error: {}", e))?;
                 eprintln!("expect ok: {}", condition);
@@ -337,18 +340,32 @@ fn run_all(
                 state.request.body = Some(resolve_body(&b)?);
                 chain.modified = true;
             }
+            Command::Var(name, value) => {
+                state.vars.insert(name, value);
+                chain.modified = true;
+            }
+            Command::VarRm(name) => {
+                if state.vars.remove(&name).is_some() {
+                    chain.modified = true;
+                } else {
+                    eprintln!("warning: variable '{}' not found", name);
+                }
+            }
             Command::Save(path) => {
                 presets.save(&state.request, &path)?;
                 eprintln!("Request saved to: {}", path.display());
             }
             Command::Load(path) => {
                 let mut loaded = presets.load(&path)?;
-                // The cookie jar belongs to the session, not the loaded file —
-                // it survives `load` just like it survives `send` (only
-                // `reset` clears it). A file that explicitly carries cookies
-                // still wins.
+                // The cookie jar and session variables belong to the session,
+                // not the loaded file — they survive `load` just like they
+                // survive `send` (only `reset` clears them). A file that
+                // explicitly carries cookies or vars still wins.
                 if loaded.cookies.is_empty() {
                     loaded.cookies = std::mem::take(&mut state.cookies);
+                }
+                if loaded.vars.is_empty() {
+                    loaded.vars = std::mem::take(&mut state.vars);
                 }
                 *state = loaded;
                 chain.modified = true;

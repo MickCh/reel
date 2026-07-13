@@ -1,5 +1,9 @@
 use super::*;
 
+// Shared empty vars map — most tests don't exercise session variables.
+static NO_VARS: std::sync::LazyLock<HashMap<String, String>> =
+    std::sync::LazyLock::new(HashMap::new);
+
 fn record(status: u16, body: &str, headers: &[(&str, &str)]) -> ResponseRecord {
     ResponseRecord {
         status,
@@ -31,6 +35,7 @@ fn interp(text: &str, responses: &[ResponseRecord]) -> Result<String> {
         &Context {
             requests: &[],
             responses,
+            vars: &NO_VARS,
         },
     )
 }
@@ -140,6 +145,7 @@ fn apply_interpolation_replaces_url_and_headers() {
         &Context {
             requests: &[],
             responses: &[r],
+            vars: &NO_VARS,
         },
     )
     .unwrap();
@@ -232,6 +238,7 @@ fn interp_full(text: &str, requests: &[Request], responses: &[ResponseRecord]) -
         &Context {
             requests,
             responses,
+            vars: &NO_VARS,
         },
     )
 }
@@ -259,6 +266,78 @@ fn env_var_works_without_history() {
 #[test]
 fn env_var_missing_is_error() {
     assert!(interp_full("${{ env.REEL_DEFINITELY_UNSET_VAR }}", &[], &[]).is_err());
+}
+
+// --- session variables ---
+
+fn var_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
+    entries
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+fn var_ctx(vars: &HashMap<String, String>) -> Context<'_> {
+    Context {
+        requests: &[],
+        responses: &[],
+        vars,
+    }
+}
+
+#[test]
+fn session_var_resolves_without_history() {
+    let vars = var_map(&[("token", "abc123")]);
+    // No requests and no responses at all — var must still resolve.
+    assert_eq!(
+        interpolate("Bearer ${{ var.token }}", &var_ctx(&vars)).unwrap(),
+        "Bearer abc123"
+    );
+}
+
+#[test]
+fn session_var_missing_is_error() {
+    let vars = var_map(&[]);
+    let err = interpolate("${{ var.token }}", &var_ctx(&vars)).unwrap_err();
+    assert!(
+        err.to_string().contains("variable 'token' not set"),
+        "{err}"
+    );
+}
+
+#[test]
+fn session_var_is_case_sensitive() {
+    let vars = var_map(&[("Token", "x")]);
+    assert!(interpolate("${{ var.token }}", &var_ctx(&vars)).is_err());
+    assert_eq!(
+        interpolate("${{ var.Token }}", &var_ctx(&vars)).unwrap(),
+        "x"
+    );
+}
+
+#[test]
+fn session_var_default_fallback() {
+    let vars = var_map(&[]);
+    assert_eq!(
+        interpolate("${{ var.host | default: localhost:8080 }}", &var_ctx(&vars)).unwrap(),
+        "localhost:8080"
+    );
+}
+
+#[test]
+fn base64_of_session_var() {
+    let vars = var_map(&[("creds", "user:pass")]);
+    assert_eq!(
+        interpolate("${{ base64(var.creds) }}", &var_ctx(&vars)).unwrap(),
+        "dXNlcjpwYXNz"
+    );
+}
+
+#[test]
+fn condition_with_session_var() {
+    let vars = var_map(&[("stage", "prod")]);
+    assert!(check_condition("var.stage == prod", &var_ctx(&vars)).is_ok());
+    assert!(check_condition("var.stage == dev", &var_ctx(&vars)).is_err());
 }
 
 // --- request history ---
@@ -330,6 +409,7 @@ fn condition_existence_passes_when_resolvable() {
     let ctx = Context {
         requests: &[],
         responses: &responses,
+        vars: &NO_VARS,
     };
     assert!(check_condition("body.token", &ctx).is_ok());
     assert!(check_condition("status", &ctx).is_ok());
@@ -341,6 +421,7 @@ fn condition_existence_fails_when_missing() {
     let ctx = Context {
         requests: &[],
         responses: &responses,
+        vars: &NO_VARS,
     };
     assert!(check_condition("body.missing", &ctx).is_err());
 }
@@ -351,6 +432,7 @@ fn condition_equality() {
     let ctx = Context {
         requests: &[],
         responses: &responses,
+        vars: &NO_VARS,
     };
     assert!(check_condition("status == 201", &ctx).is_ok());
     assert!(check_condition("body.id == 42", &ctx).is_ok());
@@ -366,6 +448,7 @@ fn condition_inequality() {
     let ctx = Context {
         requests: &[],
         responses: &responses,
+        vars: &NO_VARS,
     };
     assert!(check_condition("status != 404", &ctx).is_ok());
     assert!(check_condition("status != 200", &ctx).is_err());
@@ -377,6 +460,7 @@ fn condition_contains() {
     let ctx = Context {
         requests: &[],
         responses: &responses,
+        vars: &NO_VARS,
     };
     assert!(check_condition("body contains hello", &ctx).is_ok());
     assert!(check_condition("body.msg contains hello world", &ctx).is_ok());
@@ -388,6 +472,7 @@ fn condition_expr_with_quoted_space() {
     let ctx = Context {
         requests: &[],
         responses: &[],
+        vars: &NO_VARS,
     };
     // The literal's space must not be taken as the expression/operator split.
     assert!(check_condition("base64('user pass') == dXNlciBwYXNz", &ctx).is_ok());
@@ -400,6 +485,7 @@ fn condition_unknown_operator_is_error() {
     let ctx = Context {
         requests: &[],
         responses: &responses,
+        vars: &NO_VARS,
     };
     let err = check_condition("status >= 200", &ctx)
         .unwrap_err()
@@ -412,6 +498,7 @@ fn condition_without_history_is_error() {
     let ctx = Context {
         requests: &[],
         responses: &[],
+        vars: &NO_VARS,
     };
     assert!(check_condition("status == 200", &ctx).is_err());
 }
@@ -421,6 +508,7 @@ fn condition_empty_is_error() {
     let ctx = Context {
         requests: &[],
         responses: &[],
+        vars: &NO_VARS,
     };
     assert!(check_condition("  ", &ctx).is_err());
 }
@@ -431,6 +519,7 @@ fn empty_ctx() -> Context<'static> {
     Context {
         requests: &[],
         responses: &[],
+        vars: &NO_VARS,
     }
 }
 
@@ -520,6 +609,7 @@ fn base64_function_evaluates_nested_expression() {
     let ctx = Context {
         requests: &[],
         responses: &responses,
+        vars: &NO_VARS,
     };
     assert_eq!(
         interpolate("${{ base64(body.token) }}", &ctx).unwrap(),
@@ -608,6 +698,7 @@ fn default_does_not_mask_unknown_expression() {
     let ctx = Context {
         requests: &[],
         responses: &responses,
+        vars: &NO_VARS,
     };
     let err = interpolate("${{ statas | default: x }}", &ctx)
         .unwrap_err()
@@ -660,6 +751,7 @@ fn elapsed_expression_resolves() {
     let ctx = Context {
         requests: &[],
         responses: &responses,
+        vars: &NO_VARS,
     };
     assert_eq!(interpolate("${{ elapsed }}", &ctx).unwrap(), "142");
     assert_eq!(

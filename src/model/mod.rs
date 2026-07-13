@@ -163,6 +163,12 @@ pub struct State {
     // survives `send` (which only clears the history).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub cookies: Vec<Cookie>,
+    // Session variables set with `reel var <NAME> <VALUE>` — user-supplied
+    // constants readable in templates as ${{ var.<name> }}. Like the cookie
+    // jar they belong to the session: they survive `send` and `load` and are
+    // cleared by `reset`. Names are case-sensitive.
+    #[serde(skip_serializing_if = "HashMap::is_empty", default)]
+    pub vars: HashMap<String, String>,
 }
 
 // Canonical reason phrase for an HTTP status code (e.g. 200 → "OK").

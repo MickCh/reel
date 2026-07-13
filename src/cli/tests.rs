@@ -752,6 +752,176 @@ fn then_missing_preset_is_error() {
     assert!(run("then missing.json", &mut state, &http, &session).is_err());
 }
 
+// --- session variables ---
+
+#[test]
+fn parse_var_and_var_rm() {
+    let (cmds, _) = parse_args(&args("var token abc123 var-rm host")).unwrap();
+    assert!(matches!(&cmds[0], Command::Var(k, v) if k == "token" && v == "abc123"));
+    assert!(matches!(&cmds[1], Command::VarRm(k) if k == "host"));
+}
+
+#[test]
+fn parse_var_missing_value_is_error() {
+    assert!(parse_args(&args("var")).is_err());
+    assert!(parse_args(&args("var token")).is_err());
+    assert!(parse_args(&args("var-rm")).is_err());
+}
+
+#[test]
+fn parse_var_invalid_name_is_error() {
+    // Names must stay usable inside a ${{ var.<name> }} placeholder.
+    for name in ["a.b", "a|b", "a b", "a}}b", ""] {
+        assert!(
+            parse_args(&[s("var"), s(name), s("value")]).is_err(),
+            "name {name:?} should be rejected"
+        );
+    }
+    assert!(parse_args(&args("var a_b-2 value")).is_ok());
+}
+
+#[test]
+fn var_sets_and_saves_session() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run("var token abc123", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.vars.get("token").map(String::as_str), Some("abc123"));
+    assert_eq!(session.save_count.get(), 1);
+}
+
+#[test]
+fn var_overwrites_existing_value() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.vars.insert("token".to_string(), "old".to_string());
+
+    run("var token new", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.vars.get("token").map(String::as_str), Some("new"));
+}
+
+#[test]
+fn var_rm_removes_existing() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.vars.insert("token".to_string(), "abc".to_string());
+
+    run("var-rm token", &mut state, &http, &session).unwrap();
+
+    assert!(state.vars.is_empty());
+    assert_eq!(session.save_count.get(), 1);
+}
+
+#[test]
+fn var_rm_missing_does_not_save() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run("var-rm nonexistent", &mut state, &http, &session).unwrap();
+
+    assert_eq!(session.save_count.get(), 0);
+}
+
+#[test]
+fn vars_survive_send() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+    state.vars.insert("token".to_string(), "abc".to_string());
+
+    run("send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.vars.len(), 1, "send must not clear session variables");
+}
+
+#[test]
+fn load_preserves_vars() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut preset = State::default();
+    preset.request.url = Some("https://example.com".to_string());
+    let presets = MockPresets::with("p.json", preset);
+
+    let mut state = State::default();
+    state.vars.insert("token".to_string(), "abc".to_string());
+
+    run_with_presets("load p.json", &mut state, &http, &session, &presets).unwrap();
+
+    assert_eq!(
+        state.vars.get("token").map(String::as_str),
+        Some("abc"),
+        "load must not clear session variables"
+    );
+}
+
+#[test]
+fn reset_clears_vars() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.vars.insert("token".to_string(), "abc".to_string());
+
+    run("reset", &mut state, &http, &session).unwrap();
+
+    assert!(state.vars.is_empty());
+}
+
+#[test]
+fn then_interpolates_session_var() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let presets = MockPresets::with("step.json", preset("GET", "https://${{ var.host }}/users"));
+    let mut state = State::default();
+
+    // Vars are independent of history, so this works as the first request in
+    // a chain — and a var set in the same invocation is already visible.
+    run_with_presets(
+        "var host api.example.com then step.json",
+        &mut state,
+        &http,
+        &session,
+        &presets,
+    )
+    .unwrap();
+
+    assert_eq!(
+        state.requests.last().unwrap().url,
+        Some("https://api.example.com/users".to_string())
+    );
+}
+
+#[test]
+fn expect_reads_session_var() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    let (cmds, flags) = parse_args(&[
+        s("var"),
+        s("stage"),
+        s("prod"),
+        s("expect"),
+        s("var.stage == prod"),
+    ])
+    .unwrap();
+    run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+}
+
 // --- expect ---
 
 #[test]

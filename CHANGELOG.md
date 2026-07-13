@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Session variables: `reel var <NAME> <VALUE>` stores a named value in the session and templates read it back with `${{ var.NAME }}` (also available in `expect`/`--until` conditions and as a `base64()` argument); `var-rm <NAME>` removes it. Like `${{ env.NAME }}` but scoped to the terminal session and persisted across invocations. Variables survive `send` and `load` (like the cookie jar), are cleared by `reset`, shown by `show`, and never written to preset files by `save`.
+
 ## [0.2.1] - 2026-07-11
 
 Hardening release following a full project review; the findings are recorded in `REVIEW.md`.

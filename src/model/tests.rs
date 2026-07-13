@@ -461,6 +461,26 @@ fn state_without_cookies_omits_field() {
 }
 
 #[test]
+fn state_with_vars_round_trips() {
+    let mut state = State::default();
+    state.vars.insert("token".to_string(), "abc123".to_string());
+    let json = serde_json::to_string(&state).unwrap();
+    let restored: State = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.vars, state.vars);
+}
+
+#[test]
+fn state_without_vars_omits_field() {
+    // Session files written by older versions have no vars field — and files
+    // written now must not grow one until a var is actually set.
+    let state = State::default();
+    let json = serde_json::to_string(&state).unwrap();
+    assert!(!json.contains("vars"));
+    let restored: State = serde_json::from_str("{}").unwrap();
+    assert!(restored.vars.is_empty());
+}
+
+#[test]
 fn response_record_without_elapsed_defaults_to_zero() {
     // Session files written by older versions have no elapsed_ms field.
     let restored: ResponseRecord =

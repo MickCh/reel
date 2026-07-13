@@ -22,6 +22,8 @@ pub enum Command {
     HeaderRm(String),
     HeaderRmAll,
     Body(String),
+    Var(String, String),
+    VarRm(String),
     Send,
     Then(PathBuf),
     Expect(String),

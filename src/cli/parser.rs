@@ -63,6 +63,23 @@ fn parse_response_target(args: &[String]) -> Result<(ResponseTarget, usize)> {
     }
 }
 
+// Variable names must stay usable inside a `${{ var.<name> }}` placeholder,
+// so the charset excludes anything template syntax gives meaning to (dots,
+// pipes, braces, whitespace).
+fn validate_var_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        bail!(
+            "error: invalid variable name '{}' (allowed: letters, digits, '_', '-')",
+            name
+        );
+    }
+    Ok(())
+}
+
 fn parse_header(tokens: &mut Tokens) -> Result<Command> {
     let first = tokens.value_for("header", "KEY:VALUE or KEY VALUE")?;
     if let Some((key, value)) = first.split_once(':') {
@@ -159,6 +176,16 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
                 commands.push(Command::Body(value.to_string()));
             }
             "header" => commands.push(parse_header(&mut tokens)?),
+            "var" => {
+                let name = tokens.value_for("var", "a name and a value")?;
+                validate_var_name(name)?;
+                let value = tokens.value_for("var", "a value")?;
+                commands.push(Command::Var(name.to_string(), value.to_string()));
+            }
+            "var-rm" => {
+                let name = tokens.value_for("var-rm", "a variable name")?;
+                commands.push(Command::VarRm(name.to_string()));
+            }
             "header-rm" => {
                 let name = tokens.value_for("header-rm", "a header name")?;
                 commands.push(Command::HeaderRm(name.to_lowercase()));
