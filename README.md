@@ -47,6 +47,8 @@ This is useful in scripts, CI, or anywhere the parent-PID heuristic doesn't fit 
 | other Unix (BSD, etc.) | per terminal window |
 | other | degraded — all windows share one session |
 
+> **Git Bash / MSYS2 on Windows:** the parent-PID heuristic does not hold there. MSYS shells spawn each native Windows executable through a short-lived intermediate process, so every `reel` invocation sees a *different* parent PID and gets a fresh session (the orphaned session files are cleaned up automatically on later runs). Set [`REEL_SESSION`](#named-sessions-reel_session) to get a stable session in Git Bash — PowerShell and cmd are unaffected.
+
 ## Installation
 
 ### From GitHub (recommended)

@@ -63,7 +63,7 @@ pub trait PresetStore {
 The session key is, in order of precedence:
 
 1. **`REEL_SESSION` env var** — a named session, stored as `~/.reel/sessions/named-<name>.json`. Valid names are 1–64 chars from `[A-Za-z0-9._-]`; an invalid value prints a warning and falls back to the PPID. The `named-` prefix guarantees named files never collide with PID files.
-2. **Parent shell PID** — stored as `~/.reel/sessions/<ppid>.json`. The PPID is read once via `OnceLock<u32>` and cached for the process lifetime.
+2. **Parent shell PID** — stored as `~/.reel/sessions/<ppid>.json`. The PPID is read once via `OnceLock<u32>` and cached for the process lifetime. Known limitation: under Git Bash/MSYS2 on Windows the shell spawns each native executable via a short-lived intermediate process, so every invocation sees a different PPID and gets a fresh session — `REEL_SESSION` is the workaround (documented in README; the orphan files are removed by the normal dead-PID cleanup).
 
 Platform-specific PPID lookup is gated with `#[cfg(...)]` inside `get_ppid()` in `session/mod.rs`:
 
