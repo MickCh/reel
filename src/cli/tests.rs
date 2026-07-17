@@ -176,8 +176,10 @@ fn parse_header_missing_value_is_error() {
 
 #[test]
 fn parse_header_rm() {
+    // The name keeps the user's casing (removal itself is case-insensitive),
+    // so warnings echo what was typed.
     let (cmds, _) = parse_args(&args("header-rm X-Foo")).unwrap();
-    assert!(matches!(&cmds[0], Command::HeaderRm(k) if k == "x-foo"));
+    assert!(matches!(&cmds[0], Command::HeaderRm(k) if k == "X-Foo"));
 }
 
 #[test]
@@ -1040,7 +1042,7 @@ fn format_curl_full_request() {
         .headers
         .insert("Authorization".to_string(), "Bearer tok".to_string());
 
-    let cmd = display::format_curl(&request, false).unwrap();
+    let cmd = display::format_curl(&request, false, false).unwrap();
     assert_eq!(
         cmd,
         r#"curl -X POST 'https://api.example.com/users' -H 'Authorization: Bearer tok' -H 'Content-Type: application/json' --data-binary '{"name":"Alice"}'"#
@@ -1055,7 +1057,7 @@ fn format_curl_quotes_apostrophes() {
         ..Default::default()
     };
 
-    let cmd = display::format_curl(&request, false).unwrap();
+    let cmd = display::format_curl(&request, false, false).unwrap();
     // Body forces an explicit -X GET (curl would otherwise switch to POST).
     assert_eq!(
         cmd,
@@ -1070,14 +1072,14 @@ fn format_curl_bare_get_and_insecure() {
         ..Default::default()
     };
     assert_eq!(
-        display::format_curl(&request, true).unwrap(),
+        display::format_curl(&request, true, false).unwrap(),
         "curl -k 'https://example.com'"
     );
 }
 
 #[test]
 fn format_curl_without_url_is_error() {
-    assert!(display::format_curl(&Request::default(), false).is_err());
+    assert!(display::format_curl(&Request::default(), false, false).is_err());
 }
 
 #[test]
@@ -1247,7 +1249,7 @@ fn body_double_at_is_literal() {
 fn parse_retry_until_delay_flags() {
     let (cmds, flags) =
         parse_args(&[s("--retry"), s("3"), s("--delay"), s("0"), s("send")]).unwrap();
-    assert_eq!(flags.retry, 3);
+    assert_eq!(flags.retry, Some(3));
     assert_eq!(flags.delay_secs, 0);
     assert_eq!(cmds.len(), 1);
 
@@ -1742,7 +1744,7 @@ fn format_curl_quotes_unusual_method() {
         url: Some("https://example.com".to_string()),
         ..Default::default()
     };
-    let cmd = display::format_curl(&request, false).unwrap();
+    let cmd = display::format_curl(&request, false, false).unwrap();
     assert!(cmd.contains("-X 'GET;X'"), "{cmd}");
 }
 
@@ -1755,4 +1757,353 @@ fn format_size_scales_units() {
     assert_eq!(display::format_size(4200), "4.1 KiB");
     assert_eq!(display::format_size(5 * 1024 * 1024), "5.0 MiB");
     assert_eq!(display::format_size(3 * 1024 * 1024 * 1024), "3.0 GiB");
+}
+
+// --- new commands: body-rm, cookie-rm, timeout ---
+
+#[test]
+fn parse_body_rm() {
+    let (cmds, _) = parse_args(&args("body-rm")).unwrap();
+    assert!(matches!(cmds[0], Command::BodyRm));
+}
+
+#[test]
+fn body_rm_clears_body() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.body = Some("{}".to_string());
+
+    run("body-rm", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.request.body, None);
+    assert_eq!(session.save_count.get(), 1, "removal must be persisted");
+}
+
+#[test]
+fn body_rm_without_body_warns_and_does_not_save() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run("body-rm", &mut state, &http, &session).unwrap();
+
+    assert_eq!(session.save_count.get(), 0);
+}
+
+#[test]
+fn cookie_rm_removes_all_cookies_with_name() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    let cookie = |name: &str, domain: &str| crate::model::Cookie {
+        name: name.to_string(),
+        value: "v".to_string(),
+        domain: domain.to_string(),
+        path: "/".to_string(),
+        secure: false,
+        host_only: true,
+    };
+    state.cookies = vec![
+        cookie("sid", "a.example.com"),
+        cookie("sid", "b.example.com"),
+        cookie("other", "a.example.com"),
+    ];
+
+    run("cookie-rm sid", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.cookies.len(), 1);
+    assert_eq!(state.cookies[0].name, "other");
+    assert_eq!(session.save_count.get(), 1);
+}
+
+#[test]
+fn cookie_rm_missing_warns_and_does_not_save() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run("cookie-rm sid", &mut state, &http, &session).unwrap();
+
+    assert_eq!(session.save_count.get(), 0);
+}
+
+#[test]
+fn timeout_sets_request_field() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run("timeout 60", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.request.timeout_secs, Some(60));
+    assert_eq!(session.save_count.get(), 1);
+}
+
+#[test]
+fn timeout_rejects_non_numeric() {
+    assert!(parse_args(&args("timeout fast")).is_err());
+    assert!(parse_args(&args("timeout")).is_err());
+}
+
+#[test]
+fn format_curl_includes_timeout() {
+    let request = Request {
+        url: Some("https://example.com".to_string()),
+        timeout_secs: Some(60),
+        ..Default::default()
+    };
+    let cmd = display::format_curl(&request, false, false).unwrap();
+    assert!(cmd.contains("-m 60"), "{cmd}");
+    // 0 = no timeout = curl's own default: nothing to emit.
+    let request = Request {
+        url: Some("https://example.com".to_string()),
+        timeout_secs: Some(0),
+        ..Default::default()
+    };
+    let cmd = display::format_curl(&request, false, false).unwrap();
+    assert!(!cmd.contains("-m"), "{cmd}");
+}
+
+// --- flag aliases and method casing ---
+
+#[test]
+fn parse_flag_aliases() {
+    let (_, flags) = parse_args(&args("--fail send")).unwrap();
+    assert!(flags.fail_on_error);
+    let (_, flags) = parse_args(&args("follow send")).unwrap();
+    assert!(flags.follow);
+    let (_, flags) = parse_args(&args("--follow send")).unwrap();
+    assert!(flags.follow);
+    let (_, flags) = parse_args(&args("retry 2 send")).unwrap();
+    assert_eq!(flags.retry, Some(2));
+}
+
+#[test]
+fn flag_words_as_values_stay_values() {
+    // Tokens consumed as values must never flip flags.
+    let (cmds, flags) = parse_args(&args("header X-Mode follow body fail")).unwrap();
+    assert!(!flags.follow && !flags.fail_on_error);
+    assert_eq!(cmds.len(), 2);
+}
+
+#[test]
+fn parse_method_preserves_custom_casing() {
+    // Standard methods are uppercased for convenience...
+    let (cmds, _) = parse_args(&args("method delete")).unwrap();
+    assert!(matches!(&cmds[0], Command::Method(m) if m == "DELETE"));
+    // ...but a custom method goes out exactly as typed (RFC 9110: methods
+    // are case-sensitive).
+    let (cmds, _) = parse_args(&args("method Custom-Method")).unwrap();
+    assert!(matches!(&cmds[0], Command::Method(m) if m == "Custom-Method"));
+}
+
+// --- explicit --retry 0 with --until ---
+
+#[test]
+fn until_with_explicit_retry_zero_checks_once() {
+    let http = MockHttp::ok(200); // body "{}" never matches
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com".to_string());
+
+    let (cmds, flags) = parse_args(&[
+        s("--until"),
+        s("body.state == ready"),
+        s("--retry"),
+        s("0"),
+        s("--delay"),
+        s("0"),
+        s("send"),
+    ])
+    .unwrap();
+    let err = run_commands(
+        cmds,
+        &flags,
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        http.seen.borrow().len(),
+        1,
+        "--retry 0 caps the poll at one attempt"
+    );
+    assert!(err.to_string().contains("not met after 1 attempt"));
+}
+
+// --- redirect following (--follow) ---
+
+fn redirect(status: u16, location: &str) -> ResponseRecord {
+    ResponseRecord {
+        status,
+        headers: [("Location".to_string(), location.to_string())]
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>()
+            .into(),
+        body: String::new(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn redirects_not_followed_by_default() {
+    let http = MockHttp::sequence(vec![
+        Ok(redirect(302, "https://example.com/next")),
+        Ok(response(200, "ok")),
+    ]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/start".to_string());
+
+    run("send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(http.seen.borrow().len(), 1);
+    assert_eq!(state.responses[0].status, 302);
+}
+
+#[test]
+fn follow_chases_redirects_and_records_final_pair() {
+    let http = MockHttp::sequence(vec![
+        Ok(redirect(302, "https://example.com/next")),
+        Ok(redirect(301, "/final")),
+        Ok(response(200, "done")),
+    ]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/start".to_string());
+
+    run("follow send", &mut state, &http, &session).unwrap();
+
+    let seen = http.seen.borrow();
+    assert_eq!(seen.len(), 3);
+    // Relative Location is resolved against the previous hop's URL.
+    assert_eq!(seen[2].url.as_deref(), Some("https://example.com/final"));
+    // Only the final pair enters the history, with the URL actually sent.
+    assert_eq!(state.responses.len(), 1);
+    assert_eq!(state.responses[0].status, 200);
+    assert_eq!(
+        state.requests[0].url.as_deref(),
+        Some("https://example.com/final")
+    );
+}
+
+#[test]
+fn follow_303_switches_post_to_get_and_drops_body() {
+    let http = MockHttp::sequence(vec![
+        Ok(redirect(303, "https://example.com/result")),
+        Ok(response(200, "done")),
+    ]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.method = Some("POST".to_string());
+    state.request.url = Some("https://example.com/submit".to_string());
+    state.request.body = Some("{}".to_string());
+    state
+        .request
+        .headers
+        .insert("Content-Type".to_string(), "application/json".to_string());
+
+    run("follow send", &mut state, &http, &session).unwrap();
+
+    let seen = http.seen.borrow();
+    assert_eq!(seen[1].method.as_deref(), Some("GET"));
+    assert_eq!(seen[1].body, None);
+    assert!(seen[1].headers.get("content-type").is_none());
+}
+
+#[test]
+fn follow_307_preserves_method_and_body() {
+    let http = MockHttp::sequence(vec![
+        Ok(redirect(307, "https://example.com/retry")),
+        Ok(response(200, "done")),
+    ]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.method = Some("POST".to_string());
+    state.request.url = Some("https://example.com/submit".to_string());
+    state.request.body = Some("{}".to_string());
+
+    run("follow send", &mut state, &http, &session).unwrap();
+
+    let seen = http.seen.borrow();
+    assert_eq!(seen[1].method.as_deref(), Some("POST"));
+    assert_eq!(seen[1].body.as_deref(), Some("{}"));
+}
+
+#[test]
+fn follow_drops_credentials_on_cross_host_redirect() {
+    let http = MockHttp::sequence(vec![
+        Ok(redirect(302, "https://other.example.org/")),
+        Ok(response(200, "done")),
+    ]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/start".to_string());
+    state
+        .request
+        .headers
+        .insert("Authorization".to_string(), "Bearer secret".to_string());
+    state
+        .request
+        .headers
+        .insert("Cookie".to_string(), "sid=1".to_string());
+    state
+        .request
+        .headers
+        .insert("X-Custom".to_string(), "kept".to_string());
+
+    run("follow send", &mut state, &http, &session).unwrap();
+
+    let seen = http.seen.borrow();
+    assert!(seen[0].headers.get("authorization").is_some());
+    assert!(seen[1].headers.get("authorization").is_none());
+    assert!(seen[1].headers.get("cookie").is_none());
+    assert_eq!(seen[1].headers.get("x-custom"), Some("kept"));
+}
+
+#[test]
+fn follow_collects_cookies_from_every_hop() {
+    let responses = vec![
+        Ok(ResponseRecord {
+            set_cookies: vec!["hop1=a; Path=/".to_string()],
+            ..redirect(302, "/next")
+        }),
+        Ok(ResponseRecord {
+            set_cookies: vec!["hop2=b; Path=/".to_string()],
+            ..response(200, "done")
+        }),
+    ];
+    let http = MockHttp::sequence(responses);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/start".to_string());
+
+    run("follow send", &mut state, &http, &session).unwrap();
+
+    let names: Vec<_> = state.cookies.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"hop1") && names.contains(&"hop2"),
+        "{names:?}"
+    );
+    // The second hop must carry the cookie set by the first.
+    assert_eq!(http.seen.borrow()[1].headers.get("cookie"), Some("hop1=a"));
+}
+
+#[test]
+fn follow_gives_up_after_redirect_cap() {
+    // A single looping 302 repeats forever (the last mock response repeats).
+    let http = MockHttp::sequence(vec![Ok(redirect(302, "https://example.com/loop"))]);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.url = Some("https://example.com/loop".to_string());
+
+    let err = run("follow send", &mut state, &http, &session).unwrap_err();
+
+    assert!(err.to_string().contains("too many redirects"), "{err}");
+    // 1 initial + 10 followed hops, and no retry burn (permanent error).
+    assert_eq!(http.seen.borrow().len(), 11);
 }

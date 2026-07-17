@@ -1,7 +1,9 @@
 use anyhow::{Result, bail};
 
-use crate::http::{HttpClient, PermanentError};
-use crate::model::{Cookie, Request, State, cookie_header, parse_set_cookie, update_jar};
+use crate::http::{HttpClient, PermanentError, permanent};
+use crate::model::{
+    Cookie, Request, ResponseRecord, State, cookie_header, parse_set_cookie, update_jar,
+};
 use crate::session::{PresetStore, SessionStore};
 use crate::template::{Context, apply_interpolation, check_condition};
 
@@ -57,6 +59,101 @@ fn transient_5xx(status: u16) -> bool {
     status >= 500 && !matches!(status, 501 | 505 | 506 | 510)
 }
 
+// Redirect-hop cap for --follow (reqwest's own default).
+const MAX_REDIRECTS: u32 = 10;
+
+// Parse the raw Set-Cookie values of a response into the session jar. Every
+// hop and every retry attempt goes through here — servers rotate session
+// cookies mid-chain. Marking the state modified lets the end-of-run
+// best-effort save keep the cookies even when the chain later aborts.
+fn absorb_cookies(state: &mut State, chain: &mut ChainState, url: Option<&str>, raw: &[String]) {
+    if let Some((host, path, _)) = url_parts(url) {
+        for value in raw {
+            if let Some(update) = parse_set_cookie(value, &host, &path) {
+                update_jar(&mut state.cookies, update);
+                chain.modified = true;
+            }
+        }
+    }
+}
+
+// Given a redirect response, derive the next request from the current one
+// (curl -L semantics), or None when the response is not a followable
+// redirect. 303 switches to GET (a HEAD stays HEAD); 301/302 do so only for
+// POST; 307/308 preserve method and body. When the body is dropped, its
+// Content-Type goes with it. On a cross-host redirect the user-set
+// Authorization and Cookie headers are stripped — credentials must not ride
+// to a different host (the session jar re-scopes itself per hop anyway).
+fn redirect_target(current: &Request, status: u16, location: Option<&str>) -> Option<Request> {
+    if !matches!(status, 301 | 302 | 303 | 307 | 308) {
+        return None;
+    }
+    let location = location?;
+    let base = url::Url::parse(current.url.as_deref()?).ok()?;
+    let next_url = base.join(location).ok()?;
+
+    let mut next = current.clone();
+    let method = current.method.as_deref().unwrap_or("GET");
+    let to_get = (status == 303 && !method.eq_ignore_ascii_case("HEAD"))
+        || (matches!(status, 301 | 302) && method.eq_ignore_ascii_case("POST"));
+    if to_get {
+        next.method = Some("GET".to_string());
+        next.body = None;
+        next.headers.remove("content-type");
+    }
+    if base.host_str() != next_url.host_str() {
+        next.headers.remove("authorization");
+        next.headers.remove("cookie");
+    }
+    next.url = Some(next_url.to_string());
+    Some(next)
+}
+
+// One logical exchange: execute the request and, under --follow, chase 3xx
+// redirects. Cookies from every hop enter the jar; only the final hop's
+// request/response pair is returned (and later recorded) — like curl -L.
+fn execute_following(
+    state: &mut State,
+    flags: &GlobalFlags,
+    http: &dyn HttpClient,
+    source: Option<&str>,
+    chain: &mut ChainState,
+) -> Result<(Request, ResponseRecord)> {
+    // `base` holds the user-visible request for the current hop, without the
+    // jar-injected Cookie header — that header is re-derived per hop so each
+    // redirect target gets exactly the cookies scoped to it.
+    let mut base = state.request.clone();
+    let mut hops = 0u32;
+    loop {
+        let request = with_session_cookies(&base, &state.cookies);
+        let record = http.execute(&request, source)?;
+        absorb_cookies(state, chain, request.url.as_deref(), &record.set_cookies);
+        if !flags.follow {
+            return Ok((request, record));
+        }
+        let location = record.headers.get("location").map(str::to_string);
+        match redirect_target(&base, record.status, location.as_deref()) {
+            Some(next) => {
+                hops += 1;
+                if hops > MAX_REDIRECTS {
+                    // Deterministic loop — retrying cannot help.
+                    return Err(permanent(format!(
+                        "error: too many redirects (more than {})",
+                        MAX_REDIRECTS
+                    )));
+                }
+                eprintln!(
+                    "following redirect -> {} ({})",
+                    next.url.as_deref().unwrap_or("?"),
+                    format_status(record.status)
+                );
+                base = next;
+            }
+            None => return Ok((request, record)),
+        }
+    }
+}
+
 // Shared execution path of `send` and `then`: run the request, record it in
 // the history, persist the session, and print the result. `fresh_history` is
 // the `send` semantics — the previous history is replaced, but only once an
@@ -79,10 +176,11 @@ fn execute_and_record(
         (fresh_history && !state.responses.is_empty()).then_some("previous responses cleared");
 
     // Attempt budget: --retry N gives N extra attempts; polling with --until
-    // alone gets a default budget of 10 attempts.
+    // alone gets a default budget of 10 attempts. An explicit `--retry 0`
+    // (unlike an absent flag) caps the poll at a single attempt.
     let max_attempts = match (&flags.until, flags.retry) {
-        (Some(_), 0) => 10,
-        (_, retry) => retry.saturating_add(1),
+        (Some(_), None) => 10,
+        (_, retry) => retry.unwrap_or(0).saturating_add(1),
     };
     let mut attempt = 1u32;
     // Set when --until exhausts its budget: the last response is still
@@ -90,23 +188,11 @@ fn execute_and_record(
     let mut until_error = None;
 
     let (request, record) = loop {
-        // Rebuilt each attempt: a Set-Cookie received on a retried attempt
-        // must be reflected in the next one.
-        let request = with_session_cookies(&state.request, &state.cookies);
-        let reason = match http.execute(&request, source) {
-            Ok(record) => {
-                // Every attempt's cookies enter the jar, not just the final
-                // one — servers rotate session cookies mid-poll. Marking the
-                // state modified lets the end-of-run best-effort save keep
-                // them even when a later attempt fails the whole chain.
-                if let Some((host, path, _)) = url_parts(request.url.as_deref()) {
-                    for raw in &record.set_cookies {
-                        if let Some(update) = parse_set_cookie(raw, &host, &path) {
-                            update_jar(&mut state.cookies, update);
-                            chain.modified = true;
-                        }
-                    }
-                }
+        // The request is rebuilt each attempt (inside execute_following): a
+        // Set-Cookie received on a retried attempt must be reflected in the
+        // next one.
+        let reason = match execute_following(state, flags, http, source, chain) {
+            Ok((request, record)) => {
                 if let Some(condition) = &flags.until {
                     // Evaluate against the history as it would look with this
                     // attempt appended — both vectors, so `request.*` refers
@@ -296,7 +382,7 @@ fn run_all(
                 // The command reproduces what reel would send, session
                 // cookies included. Stdout: it is data, not a diagnostic.
                 let request = with_session_cookies(&state.request, &state.cookies);
-                println!("{}", format_curl(&request, flags.insecure)?);
+                println!("{}", format_curl(&request, flags.insecure, flags.follow)?);
             }
             Command::Show => {
                 chain.do_show = true;
@@ -338,6 +424,26 @@ fn run_all(
             }
             Command::Body(b) => {
                 state.request.body = Some(resolve_body(&b)?);
+                chain.modified = true;
+            }
+            Command::BodyRm => {
+                if state.request.body.take().is_some() {
+                    chain.modified = true;
+                } else {
+                    eprintln!("warning: body not set");
+                }
+            }
+            Command::CookieRm(name) => {
+                let before = state.cookies.len();
+                state.cookies.retain(|c| c.name != name);
+                if state.cookies.len() != before {
+                    chain.modified = true;
+                } else {
+                    eprintln!("warning: cookie '{}' not found", name);
+                }
+            }
+            Command::Timeout(secs) => {
+                state.request.timeout_secs = Some(secs);
                 chain.modified = true;
             }
             Command::Var(name, value) => {

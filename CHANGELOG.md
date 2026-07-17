@@ -9,6 +9,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Session variables: `reel var <NAME> <VALUE>` stores a named value in the session and templates read it back with `${{ var.NAME }}` (also available in `expect`/`--until` conditions and as a `base64()` argument); `var-rm <NAME>` removes it. Like `${{ env.NAME }}` but scoped to the terminal session and persisted across invocations. Variables survive `send` and `load` (like the cookie jar), are cleared by `reset`, shown by `show`, and never written to preset files by `save`.
+- `--follow` (or `follow`): opt-in redirect following with `curl -L` semantics — up to 10 hops, cookies collected on every hop, `303` (and `301`/`302` after `POST`) switches to `GET` and drops the body, and user-set `Authorization`/`Cookie` headers are stripped on a cross-host redirect. Only the final request/response pair enters the history; `curl` output gains `-L` when the flag is active.
+- `timeout <SECONDS>`: configurable per-request timeout, persisted in the session and in presets (default stays 30 s; `0` disables the timeout entirely). `curl` output gains `-m <SECONDS>` when set.
+- `body-rm`: removes the request body without touching the rest of the session (previously only `reset` or `load` could clear it).
+- `cookie-rm <NAME>`: removes all session cookies with the given name from the jar.
+- Flag spelling is now consistent: every flag accepts both the bare and the `--` form (`fail`/`--fail`, `follow`/`--follow`, `retry`/`--retry`, `until`/`--until`, `delay`/`--delay`).
+
+### Changed
+
+- `method` uppercases only the standard HTTP methods; a custom method (e.g. `Custom-Method`) is sent exactly as typed, since HTTP methods are case-sensitive.
+- Reading a session (e.g. `show`, `response`) refreshes the session file's mtime, so the 7-day cleanup of named sessions counts days since last *use*, not last save.
+- README documents the preset trust model: preset files can read environment/session variables via templates, so they should be treated like scripts and inspected (e.g. with `--dry-run`) before running.
+
+### Fixed
+
+- `--until` combined with an explicit `--retry 0` now checks the condition exactly once instead of falling back to the default budget of 10 attempts.
+- A quoted literal containing `}}` inside a placeholder (e.g. `${{ base64('}}') }}`) no longer terminates the placeholder early.
+- The warning for `header-rm` on an absent header echoes the name with the user's original casing instead of lowercased.
 
 ## [0.2.1] - 2026-07-11
 

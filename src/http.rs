@@ -10,6 +10,9 @@ pub trait HttpClient {
     fn execute(&self, request: &Request, source: Option<&str>) -> Result<ResponseRecord>;
 }
 
+// Applied when the request carries no `timeout_secs` of its own.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
 // Marker for errors no retry can fix — a malformed URL, method, or header.
 // The retry loop in cli/runner.rs gives up immediately when it sees one
 // instead of burning the attempt budget on a deterministic failure.
@@ -24,7 +27,7 @@ impl std::fmt::Display for PermanentError {
 
 impl std::error::Error for PermanentError {}
 
-fn permanent(msg: String) -> anyhow::Error {
+pub fn permanent(msg: String) -> anyhow::Error {
     anyhow::Error::new(PermanentError(msg))
 }
 
@@ -36,7 +39,10 @@ impl ReqwestClient {
     pub fn new(insecure: bool) -> Result<Self> {
         Ok(Self {
             client: reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(30))
+                // The timeout is per-request (`Request.timeout_secs`, applied
+                // in execute); the client-level default must be off so that
+                // `timeout 0` can really mean "no timeout".
+                .timeout(None)
                 .danger_accept_invalid_certs(insecure)
                 // curl parity: 3xx responses surface to the user instead of
                 // being followed silently. This also keeps the cookie jar in
@@ -101,6 +107,11 @@ impl HttpClient for ReqwestClient {
 
         let started = std::time::Instant::now();
         let mut builder = self.client.request(method, &url);
+        match request.timeout_secs {
+            Some(0) => {} // explicit "no timeout"
+            Some(secs) => builder = builder.timeout(Duration::from_secs(secs)),
+            None => builder = builder.timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS)),
+        }
         for (k, v) in request.headers.iter() {
             builder = builder.header(k, v);
         }

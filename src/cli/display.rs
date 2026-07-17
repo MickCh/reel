@@ -102,6 +102,11 @@ pub fn show_state(state: &State, session: &dyn SessionStore) {
             .unwrap_or_else(|_| body.clone());
         eprintln!("  body    {}", formatted.replace('\n', "\n          "));
     }
+    match state.request.timeout_secs {
+        Some(0) => eprintln!("  timeout none"),
+        Some(secs) => eprintln!("  timeout {} s", secs),
+        None => {}
+    }
     let mut vars: Vec<_> = state.vars.iter().collect();
     vars.sort_by_key(|(k, _)| k.as_str());
     for (k, v) in vars {
@@ -182,6 +187,11 @@ pub fn print_usage() {
     eprintln!(
         "  body @<PATH> / body -  set request body from a file / from stdin (@@ escapes a literal @)"
     );
+    eprintln!("  body-rm                remove the request body");
+    eprintln!("  cookie-rm <NAME>       remove all session cookies with the given name");
+    eprintln!(
+        "  timeout <SECONDS>      set the request timeout (default: 30; 0 disables the timeout)"
+    );
     eprintln!(
         "  var <NAME> <VALUE>     set a session variable (read in templates as ${{{{ var.NAME }}}})"
     );
@@ -214,9 +224,10 @@ pub fn print_usage() {
     eprintln!("  load <PATH>            load state from a JSON file");
     eprintln!("  save <PATH>            save the current request to a JSON preset file");
     eprintln!(
-        "  fail                   exit with code 1 if any response is 4xx/5xx (position-independent)"
+        "  fail / --fail          exit with code 1 if any response is 4xx/5xx (position-independent)"
     );
     eprintln!("  insecure / --insecure  skip TLS certificate verification (position-independent)");
+    eprintln!("  follow / --follow      follow 3xx redirects, like curl -L (position-independent)");
     eprintln!(
         "  --retry <N>            retry send/then up to N extra times on network error or 5xx"
     );
@@ -277,7 +288,12 @@ pub fn print_usage() {
         "         on matching requests. A manually set Cookie header always takes precedence."
     );
     eprintln!();
-    eprintln!("Redirects: not followed (like curl without -L) — a 3xx response is shown as-is.");
+    eprintln!(
+        "Redirects: not followed by default (like curl without -L) — a 3xx response is shown as-is."
+    );
+    eprintln!(
+        "           Use 'follow' to chase up to 10 redirects; cookies are collected on every hop."
+    );
     eprintln!();
     eprintln!(
         "Note: status messages and confirmations are written to stderr; response body goes to stdout."
@@ -308,7 +324,11 @@ fn quote_method(method: &str) -> String {
 
 // The current request as an equivalent curl command — for sharing in issues,
 // docs, or with people who don't have reel.
-pub(super) fn format_curl(request: &Request, insecure: bool) -> anyhow::Result<String> {
+pub(super) fn format_curl(
+    request: &Request,
+    insecure: bool,
+    follow: bool,
+) -> anyhow::Result<String> {
     let url = request
         .url
         .as_deref()
@@ -324,6 +344,13 @@ pub(super) fn format_curl(request: &Request, insecure: bool) -> anyhow::Result<S
     }
     if insecure {
         parts.push("-k".to_string());
+    }
+    if follow {
+        parts.push("-L".to_string());
+    }
+    // Some(0) = no timeout, which is also curl's default — nothing to emit.
+    if let Some(secs) = request.timeout_secs.filter(|&s| s > 0) {
+        parts.push(format!("-m {}", secs));
     }
     parts.push(shell_quote(url));
     for (name, value) in request.headers.sorted() {

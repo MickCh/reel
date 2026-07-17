@@ -270,6 +270,12 @@ impl SessionStore for FileSessionStore {
                     let _ = fs::remove_file(&self.path);
                     return State::default();
                 }
+                // Refresh the mtime on read (best-effort): the age-based
+                // cleanup rule treats mtime as "last use", and a named
+                // session used daily for reads only must not look abandoned.
+                if let Ok(f) = fs::OpenOptions::new().append(true).open(&self.path) {
+                    let _ = f.set_modified(SystemTime::now());
+                }
                 file.state
             }
             Err(e) => {
