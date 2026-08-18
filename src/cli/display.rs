@@ -102,6 +102,9 @@ pub fn show_state(state: &State, session: &dyn SessionStore) {
             .unwrap_or_else(|_| body.clone());
         eprintln!("  body    {}", formatted.replace('\n', "\n          "));
     }
+    if let Some(path) = &state.request.body_file {
+        eprintln!("  body    @{} (read on send)", path);
+    }
     match state.request.timeout_secs {
         Some(0) => eprintln!("  timeout none"),
         Some(secs) => eprintln!("  timeout {} s", secs),
@@ -187,6 +190,7 @@ pub fn print_usage() {
     eprintln!(
         "  body @<PATH> / body -  set request body from a file / from stdin (@@ escapes a literal @)"
     );
+    eprintln!("  body-file <PATH>       set request body from a file, re-read on every send");
     eprintln!("  body-rm                remove the request body");
     eprintln!("  cookie-rm <NAME>       remove all session cookies with the given name");
     eprintln!(
@@ -241,7 +245,7 @@ pub fn print_usage() {
     eprintln!("  -h / --help            show this help");
     eprintln!("  -V / --version         show version");
     eprintln!();
-    eprintln!("Template interpolation in files loaded by 'then':");
+    eprintln!("Template interpolation (resolved on every send; $${{{{ }}}} escapes a literal):");
     eprintln!("  ${{{{ status }}}}                  HTTP status code of the last response");
     eprintln!("  ${{{{ elapsed }}}}                 duration of the last request in milliseconds");
     eprintln!("  ${{{{ body }}}}                    raw body of the last response");
@@ -262,6 +266,7 @@ pub fn print_usage() {
         "  ${{{{ now() }}}} / ${{{{ now(+N) }}}}     Unix timestamp, optionally shifted by N seconds"
     );
     eprintln!("  ${{{{ base64(arg) }}}}             base64 of a 'literal' or nested expression");
+    eprintln!("  ${{{{ file(arg) }}}}               contents of a file, inserted verbatim");
     eprintln!(
         "  ${{{{ expr | default: value }}}}   fallback used when the expression cannot be resolved"
     );
@@ -273,6 +278,8 @@ pub fn print_usage() {
     eprintln!("  reel header \"Authorization: Bearer token\"");
     eprintln!("  reel header Content-Type application/json");
     eprintln!("  reel body '{{\"key\":\"value\"}}' send");
+    eprintln!("  reel body-file payload.json header Content-Type:application/json send");
+    eprintln!("  reel var token abc123 header 'Authorization: Bearer ${{{{ var.token }}}}' send");
     eprintln!("  reel response body | jq .name");
     eprintln!("  reel response headers");
     eprintln!("  reel send then step2.json then step3.json");

@@ -22,6 +22,7 @@ pub enum Command {
     HeaderRm(String),
     HeaderRmAll,
     Body(String),
+    BodyFile(String),
     BodyRm,
     CookieRm(String),
     Timeout(u64),

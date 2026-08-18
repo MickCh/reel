@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use anyhow::{Result, bail};
 
@@ -209,6 +210,15 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+// A function argument: either a single-quoted literal, taken verbatim, or a
+// nested expression, evaluated recursively.
+fn literal_or_expr(args: &str, ctx: &Context) -> Result<String> {
+    match args.strip_prefix('\'').and_then(|a| a.strip_suffix('\'')) {
+        Some(literal) => Ok(literal.to_string()),
+        None => eval_expr(args, ctx),
+    }
+}
+
 // Evaluate a `name(args)` template function.
 //
 // Supported functions:
@@ -218,6 +228,8 @@ fn base64_encode(data: &[u8]) -> String {
 //   base64(<arg>)       → base64 of the argument: either a single-quoted
 //                         literal ('user:pass') or a nested expression
 //                         (env.CREDS, body.token, ...), evaluated recursively
+//   file(<arg>)         → contents of a file, inserted verbatim (the result is
+//                         not interpolated again); argument as for base64()
 fn eval_function(name: &str, args: &str, ctx: &Context) -> Result<String> {
     match name {
         "uuid" => {
@@ -245,14 +257,20 @@ fn eval_function(name: &str, args: &str, ctx: &Context) -> Result<String> {
             if args.is_empty() {
                 bail!("base64() requires an argument (a 'literal' or an expression)");
             }
-            let value = match args.strip_prefix('\'').and_then(|a| a.strip_suffix('\'')) {
-                Some(literal) => literal.to_string(),
-                None => eval_expr(args, ctx)?,
-            };
-            Ok(base64_encode(value.as_bytes()))
+            Ok(base64_encode(literal_or_expr(args, ctx)?.as_bytes()))
+        }
+        "file" => {
+            if args.is_empty() {
+                bail!("file() requires an argument (a 'path' or an expression)");
+            }
+            let path = literal_or_expr(args, ctx)?;
+            // Unresolvable rather than structural: a missing payload file is
+            // exactly the kind of absence `| default:` exists to cover.
+            std::fs::read_to_string(&path)
+                .map_err(|e| unresolvable(format!("cannot read file '{}': {}", path, e)))
         }
         other => bail!(
-            "unknown template function '{}()' (supported: uuid, now, base64)",
+            "unknown template function '{}()' (supported: uuid, now, base64, file)",
             other
         ),
     }
@@ -442,10 +460,21 @@ fn placeholder_end(s: &str) -> Option<usize> {
 }
 
 // Replace all ${{ expr }} placeholders in `text` using values from `ctx`.
+// `$${{ ... }}` is an escape: it yields a literal `${{ ... }}`, so a request
+// whose own payload contains template-looking text (a CI workflow, say) can
+// still be sent verbatim.
 pub fn interpolate(text: &str, ctx: &Context) -> Result<String> {
     let mut result = String::new();
     let mut remaining = text;
     while let Some(start) = remaining.find("${{") {
+        // The escape marker is a plain ASCII '$', so start - 1 is a char
+        // boundary whenever the preceding byte is one.
+        if remaining[..start].ends_with('$') {
+            result.push_str(&remaining[..start - 1]);
+            result.push_str("${{");
+            remaining = &remaining[start + 3..];
+            continue;
+        }
         result.push_str(&remaining[..start]);
         remaining = &remaining[start + 3..];
         let end = placeholder_end(remaining)
@@ -456,6 +485,84 @@ pub fn interpolate(text: &str, ctx: &Context) -> Result<String> {
     }
     result.push_str(remaining);
     Ok(result)
+}
+
+// Rewrite the single-quoted path argument of every `file('...')` call inside a
+// placeholder so it resolves against `dir`. Preset files are loaded by path,
+// and a payload sitting next to the preset should be found no matter which
+// directory reel runs from. A path that is absolute, or that does not exist
+// next to the preset, is left untouched — it stays relative to the working
+// directory, which is the fallback the user gets from a plain CLI invocation.
+pub fn rebase_file_literals(text: &str, dir: &Path) -> String {
+    map_placeholders(text, |expr| rebase_in_expr(expr, dir))
+}
+
+// Resolve one relative path against `dir`, keeping it as-is when it is
+// absolute or when nothing is there (see rebase_file_literals). The result is
+// made absolute: the path is stored in the session and read again on later
+// invocations, which may run from anywhere.
+pub fn rebase_path(path: &str, dir: &Path) -> String {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        return path.to_string();
+    }
+    let joined = dir.join(candidate);
+    if !joined.exists() {
+        return path.to_string();
+    }
+    std::path::absolute(&joined)
+        .unwrap_or(joined)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn rebase_in_expr(expr: &str, dir: &Path) -> String {
+    let mut out = String::new();
+    let mut rest = expr;
+    while let Some(i) = rest.find("file('") {
+        let head = &rest[..i];
+        // Only a bare `file(` call — `myfile('x')` is a different name.
+        let bare = !head.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        out.push_str(&rest[..i + "file('".len()]);
+        rest = &rest[i + "file('".len()..];
+        let Some(end) = rest.find('\'') else { break };
+        if bare {
+            out.push_str(&rebase_path(&rest[..end], dir));
+        } else {
+            out.push_str(&rest[..end]);
+        }
+        out.push('\'');
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+// Walk the ${{ ... }} placeholders of `text` (honouring the $${{ escape and
+// quoted braces) and rebuild it with `f` applied to each placeholder's inner
+// text. Text outside placeholders, and the placeholders' own spacing, are
+// preserved byte for byte. An unclosed placeholder is left as-is — reporting
+// it is interpolate's job.
+fn map_placeholders(text: &str, f: impl Fn(&str) -> String) -> String {
+    let mut result = String::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find("${{") {
+        if remaining[..start].ends_with('$') {
+            result.push_str(&remaining[..start + 3]);
+            remaining = &remaining[start + 3..];
+            continue;
+        }
+        result.push_str(&remaining[..start + 3]);
+        remaining = &remaining[start + 3..];
+        let Some(end) = placeholder_end(remaining) else {
+            break;
+        };
+        result.push_str(&f(&remaining[..end]));
+        result.push_str("}}");
+        remaining = &remaining[end + 2..];
+    }
+    result.push_str(remaining);
+    result
 }
 
 // Apply interpolation to all string fields of the request (url, body, header values).

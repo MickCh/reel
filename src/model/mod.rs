@@ -129,6 +129,13 @@ pub struct Request {
     pub headers: Headers,
     #[serde(skip_serializing_if = "Option::is_none", with = "body_serde", default)]
     pub body: Option<String>,
+    // Body sourced from a file: the path is stored in the request and read at
+    // send time, so a preset can carry a payload file instead of a copy of its
+    // contents. Mutually exclusive with `body` — setting either clears the
+    // other. History snapshots never carry it: `request.body` records the file
+    // contents as actually sent.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub body_file: Option<String>,
     // Request timeout in seconds, set with `reel timeout <SECONDS>`.
     // None = default (30 s), Some(0) = no timeout.
     #[serde(skip_serializing_if = "Option::is_none", default)]

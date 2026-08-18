@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{Result, bail};
 
 use crate::http::{HttpClient, PermanentError, permanent};
@@ -5,7 +7,9 @@ use crate::model::{
     Cookie, Request, ResponseRecord, State, cookie_header, parse_set_cookie, update_jar,
 };
 use crate::session::{PresetStore, SessionStore};
-use crate::template::{Context, apply_interpolation, check_condition};
+use crate::template::{
+    Context, apply_interpolation, check_condition, rebase_file_literals, rebase_path,
+};
 
 use super::commands::{Command, GlobalFlags, ParseResult, ResponseTarget, ResponseView};
 use super::display::{format_curl, format_size, format_status, print_body, print_dry_run};
@@ -51,6 +55,67 @@ fn resolve_body(value: &str) -> Result<String> {
             .map_err(|e| anyhow::anyhow!("error reading body file '{}': {}", rest, e));
     }
     Ok(value.to_string())
+}
+
+// Read the file a `body-file` path points at. Kept separate from
+// resolve_body's '@path' handling: that one reads the file once, when the
+// command runs, while this one runs on every send, so the request always
+// carries the file's current contents.
+fn read_body_file(path: &str) -> Result<String> {
+    std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("error reading body file '{}': {}", path, e))
+}
+
+// The request as it will actually be sent: a file-backed body read from disk,
+// then every ${{ }} placeholder resolved against the session history, the
+// environment, and the session variables.
+//
+// Interpolation happens here — at send time, on a copy — rather than when a
+// preset is loaded, so `then <file>` is exactly `load <file> send`: the
+// placeholders stay in the session and resolve afresh on every send. The
+// stored request keeps its template text; only what goes on the wire (and
+// into the history) is resolved. `source` names the preset a `then` came
+// from, for the error message.
+fn prepare_request(state: &State, source: Option<&str>) -> Result<Request> {
+    let mut request = state.request.clone();
+    if let Some(path) = request.body_file.take() {
+        // The file contents are interpolated like any other body — a payload
+        // file is a template too.
+        request.body = Some(read_body_file(&path)?);
+    }
+    let ctx = Context {
+        requests: &state.requests,
+        responses: &state.responses,
+        vars: &state.vars,
+    };
+    apply_interpolation(&mut request, &ctx).map_err(|e| match source {
+        Some(path) => anyhow::anyhow!("error in '{}': {}", path, e),
+        None => anyhow::anyhow!("error: {}", e),
+    })?;
+    Ok(request)
+}
+
+// Make the file paths a freshly loaded preset carries resolve against the
+// preset's own directory (see template::rebase_file_literals). Applied once,
+// at load time: the session file that results holds paths that work from any
+// working directory.
+fn rebase_preset_paths(request: &mut Request, preset: &Path) {
+    // An empty parent means the preset sits in the working directory, which
+    // `Path::join` handles as-is — the path still gets made absolute, so the
+    // session keeps working after a `cd`.
+    let dir = preset.parent().unwrap_or_else(|| Path::new(""));
+    if let Some(path) = &request.body_file {
+        request.body_file = Some(rebase_path(path, dir));
+    }
+    if let Some(url) = &request.url {
+        request.url = Some(rebase_file_literals(url, dir));
+    }
+    if let Some(body) = &request.body {
+        request.body = Some(rebase_file_literals(body, dir));
+    }
+    for value in request.headers.values_mut() {
+        *value = rebase_file_literals(value, dir);
+    }
 }
 
 // 5xx statuses worth retrying. 501/505/506/510 describe a permanent property
@@ -114,6 +179,7 @@ fn redirect_target(current: &Request, status: u16, location: Option<&str>) -> Op
 // request/response pair is returned (and later recorded) — like curl -L.
 fn execute_following(
     state: &mut State,
+    prepared: &Request,
     flags: &GlobalFlags,
     http: &dyn HttpClient,
     source: Option<&str>,
@@ -122,7 +188,7 @@ fn execute_following(
     // `base` holds the user-visible request for the current hop, without the
     // jar-injected Cookie header — that header is re-derived per hop so each
     // redirect target gets exactly the cookies scoped to it.
-    let mut base = state.request.clone();
+    let mut base = prepared.clone();
     let mut hops = 0u32;
     loop {
         let request = with_session_cookies(&base, &state.cookies);
@@ -169,7 +235,10 @@ fn execute_and_record(
     fresh_history: bool,
     chain: &mut ChainState,
 ) -> Result<()> {
-    if state.request.body.is_some() && state.request.headers.get("content-type").is_none() {
+    // Prepared once, outside the attempt loop: a retry must resend the same
+    // bytes, so ${{ uuid() }} idempotency keys stay stable across attempts.
+    let prepared = prepare_request(state, source)?;
+    if prepared.body.is_some() && prepared.headers.get("content-type").is_none() {
         eprintln!("warning: body is set but Content-Type header is missing");
     }
     let cleared_note =
@@ -191,7 +260,7 @@ fn execute_and_record(
         // The request is rebuilt each attempt (inside execute_following): a
         // Set-Cookie received on a retried attempt must be reflected in the
         // next one.
-        let reason = match execute_following(state, flags, http, source, chain) {
+        let reason = match execute_following(state, &prepared, flags, http, source, chain) {
             Ok((request, record)) => {
                 if let Some(condition) = &flags.until {
                     // Evaluate against the history as it would look with this
@@ -332,7 +401,8 @@ fn run_all(
         match cmd {
             Command::Send => {
                 if flags.dry_run {
-                    print_dry_run(&with_session_cookies(&state.request, &state.cookies));
+                    let prepared = prepare_request(state, None)?;
+                    print_dry_run(&with_session_cookies(&prepared, &state.cookies));
                     continue;
                 }
                 execute_and_record(state, flags, http, session, None, true, chain)?;
@@ -342,23 +412,17 @@ fn run_all(
                 let path_str = path.to_string_lossy().into_owned();
 
                 // Replace the current request from the preset; the history
-                // stays in place so templates can reference it.
-                state.request = presets.load(&path)?.request;
-
-                // Interpolate against the prior request/response history and the
-                // environment. Placeholders referencing missing history (or a
-                // missing env var) abort the chain here.
-                let ctx = Context {
-                    requests: &state.requests,
-                    responses: &state.responses,
-                    vars: &state.vars,
-                };
-                apply_interpolation(&mut state.request, &ctx)
-                    .map_err(|e| anyhow::anyhow!("error in '{}': {}", path_str, e))?;
+                // stays in place so templates can reference it. The
+                // placeholders are left intact — prepare_request resolves them
+                // when the request is sent, one step below.
+                let mut request = presets.load(&path)?.request;
+                rebase_preset_paths(&mut request, &path);
+                state.request = request;
 
                 if flags.dry_run {
                     eprintln!("(dry-run: {})", path_str);
-                    print_dry_run(&with_session_cookies(&state.request, &state.cookies));
+                    let prepared = prepare_request(state, Some(&path_str))?;
+                    print_dry_run(&with_session_cookies(&prepared, &state.cookies));
                     continue;
                 }
 
@@ -381,7 +445,8 @@ fn run_all(
             Command::Curl => {
                 // The command reproduces what reel would send, session
                 // cookies included. Stdout: it is data, not a diagnostic.
-                let request = with_session_cookies(&state.request, &state.cookies);
+                let prepared = prepare_request(state, None)?;
+                let request = with_session_cookies(&prepared, &state.cookies);
                 println!("{}", format_curl(&request, flags.insecure, flags.follow)?);
             }
             Command::Show => {
@@ -424,10 +489,25 @@ fn run_all(
             }
             Command::Body(b) => {
                 state.request.body = Some(resolve_body(&b)?);
+                // The two body sources are mutually exclusive: an inline body
+                // replaces a file-backed one.
+                state.request.body_file = None;
+                chain.modified = true;
+            }
+            Command::BodyFile(p) => {
+                // A missing file is only a warning: the path is bound late, so
+                // it may well be produced before the next send.
+                if !Path::new(&p).is_file() {
+                    eprintln!("warning: body file '{}' does not exist (yet)", p);
+                }
+                state.request.body_file = Some(p);
+                state.request.body = None;
                 chain.modified = true;
             }
             Command::BodyRm => {
-                if state.request.body.take().is_some() {
+                let had_body = state.request.body.take().is_some();
+                let had_file = state.request.body_file.take().is_some();
+                if had_body || had_file {
                     chain.modified = true;
                 } else {
                     eprintln!("warning: body not set");
@@ -463,6 +543,7 @@ fn run_all(
             }
             Command::Load(path) => {
                 let mut loaded = presets.load(&path)?;
+                rebase_preset_paths(&mut loaded.request, &path);
                 // The cookie jar and session variables belong to the session,
                 // not the loaded file — they survive `load` just like they
                 // survive `send` (only `reset` clears them). A file that

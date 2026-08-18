@@ -320,8 +320,32 @@ fn run_with_presets(
     session: &dyn SessionStore,
     presets: &dyn PresetStore,
 ) -> anyhow::Result<ParseResult> {
-    let (cmds, flags) = parse_args(&args(input)).unwrap();
+    run_argv(&args(input), state, http, session, presets)
+}
+
+// Same as run_with_presets, but the arguments are given one by one — for
+// tests whose values (file paths) may contain whitespace.
+fn run_argv(
+    argv: &[String],
+    state: &mut State,
+    http: &dyn HttpClient,
+    session: &dyn SessionStore,
+    presets: &dyn PresetStore,
+) -> anyhow::Result<ParseResult> {
+    let (cmds, flags) = parse_args(argv).unwrap();
     run_commands(cmds, &flags, state, http, session, presets)
+}
+
+// A throwaway directory under the system temp dir, unique per test.
+fn temp_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("reel-test-{}-{}", std::process::id(), tag));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn path_arg(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 #[test]
@@ -2106,4 +2130,302 @@ fn follow_gives_up_after_redirect_cap() {
     assert!(err.to_string().contains("too many redirects"), "{err}");
     // 1 initial + 10 followed hops, and no retry burn (permanent error).
     assert_eq!(http.seen.borrow().len(), 11);
+}
+
+// --- send-time interpolation ---
+
+#[test]
+fn send_interpolates_session_var() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.vars.insert(s("id"), s("42"));
+
+    run(
+        "url https://example.com/${{var.id}} send",
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    assert_eq!(
+        http.seen.borrow()[0].url.as_deref(),
+        Some("https://example.com/42")
+    );
+    // The stored request keeps the template text: it resolves afresh on the
+    // next send, so a changed variable takes effect without reloading.
+    assert_eq!(
+        state.request.url.as_deref(),
+        Some("https://example.com/${{var.id}}")
+    );
+}
+
+#[test]
+fn load_then_send_interpolates_the_preset() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let presets = MockPresets::with("p.json", preset("GET", "https://example.com/${{ var.id }}"));
+    let mut state = State::default();
+    state.vars.insert(s("id"), s("7"));
+
+    run_with_presets("load p.json send", &mut state, &http, &session, &presets).unwrap();
+
+    assert_eq!(
+        http.seen.borrow()[0].url.as_deref(),
+        Some("https://example.com/7")
+    );
+}
+
+#[test]
+fn send_interpolates_against_the_previous_response() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.responses.push(ResponseRecord {
+        status: 200,
+        body: r#"{"token":"abc"}"#.to_string(),
+        ..Default::default()
+    });
+
+    run(
+        "url https://example.com/${{body.token}} send",
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    assert_eq!(
+        http.seen.borrow()[0].url.as_deref(),
+        Some("https://example.com/abc")
+    );
+}
+
+#[test]
+fn escaped_placeholder_is_sent_literally() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run(
+        "url https://example.com body $${{var.id}} send",
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    assert_eq!(http.seen.borrow()[0].body.as_deref(), Some("${{var.id}}"));
+}
+
+#[test]
+fn unresolvable_placeholder_aborts_before_sending() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    assert!(
+        run(
+            "url https://example.com/${{var.missing}} send",
+            &mut state,
+            &http,
+            &session
+        )
+        .is_err()
+    );
+    assert!(http.seen.borrow().is_empty());
+}
+
+#[test]
+fn then_keeps_the_template_in_the_stored_request() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let presets = MockPresets::with("p.json", preset("GET", "https://example.com/${{ var.id }}"));
+    let mut state = State::default();
+    state.vars.insert(s("id"), s("9"));
+
+    run_with_presets("then p.json", &mut state, &http, &session, &presets).unwrap();
+
+    assert_eq!(
+        state.requests.last().unwrap().url.as_deref(),
+        Some("https://example.com/9")
+    );
+    assert_eq!(
+        state.request.url.as_deref(),
+        Some("https://example.com/${{ var.id }}")
+    );
+}
+
+// --- body from a file ---
+
+#[test]
+fn body_file_is_read_at_send_time() {
+    let dir = temp_dir("body-file");
+    let payload = dir.join("payload.json");
+    std::fs::write(&payload, r#"{"a":1}"#).unwrap();
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run_argv(
+        &[
+            s("url"),
+            s("https://example.com"),
+            s("body-file"),
+            path_arg(&payload),
+            s("send"),
+        ],
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+
+    assert_eq!(http.seen.borrow()[0].body.as_deref(), Some(r#"{"a":1}"#));
+    // The session keeps the path, not a copy of the contents.
+    assert!(state.request.body.is_none());
+    assert_eq!(state.request.body_file, Some(path_arg(&payload)));
+}
+
+#[test]
+fn body_file_is_reread_on_every_send() {
+    let dir = temp_dir("body-file-reread");
+    let payload = dir.join("payload.txt");
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    std::fs::write(&payload, "one").unwrap();
+    run_argv(
+        &[
+            s("url"),
+            s("https://example.com"),
+            s("body-file"),
+            path_arg(&payload),
+            s("send"),
+        ],
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+
+    std::fs::write(&payload, "two").unwrap();
+    run_argv(
+        &[s("send")],
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+
+    let seen = http.seen.borrow();
+    assert_eq!(seen[0].body.as_deref(), Some("one"));
+    assert_eq!(seen[1].body.as_deref(), Some("two"));
+}
+
+#[test]
+fn body_file_contents_are_interpolated() {
+    let dir = temp_dir("body-file-template");
+    let payload = dir.join("payload.json");
+    std::fs::write(&payload, r#"{"id":"${{ var.id }}"}"#).unwrap();
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.vars.insert(s("id"), s("42"));
+
+    run_argv(
+        &[
+            s("url"),
+            s("https://example.com"),
+            s("body-file"),
+            path_arg(&payload),
+            s("send"),
+        ],
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        http.seen.borrow()[0].body.as_deref(),
+        Some(r#"{"id":"42"}"#)
+    );
+}
+
+#[test]
+fn missing_body_file_aborts_the_send() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    assert!(
+        run(
+            "url https://example.com body-file /no/such/payload.json send",
+            &mut state,
+            &http,
+            &session
+        )
+        .is_err()
+    );
+    assert!(http.seen.borrow().is_empty());
+}
+
+#[test]
+fn inline_body_replaces_a_file_backed_one() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.body_file = Some(s("payload.json"));
+
+    run("body inline", &mut state, &http, &session).unwrap();
+
+    assert_eq!(state.request.body.as_deref(), Some("inline"));
+    assert!(state.request.body_file.is_none());
+}
+
+#[test]
+fn body_rm_clears_a_file_backed_body() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.body_file = Some(s("payload.json"));
+
+    run("body-rm", &mut state, &http, &session).unwrap();
+
+    assert!(state.request.body_file.is_none());
+    assert_eq!(session.save_count.get(), 1);
+}
+
+#[test]
+fn load_resolves_body_file_next_to_the_preset() {
+    let dir = temp_dir("preset-relative");
+    std::fs::write(dir.join("payload.json"), "from the preset dir").unwrap();
+    let preset_path = dir.join("req.json");
+    let mut file = preset("POST", "https://example.com");
+    file.request.body_file = Some(s("payload.json"));
+    let presets = MockPresets::with(&path_arg(&preset_path), file);
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run_argv(
+        &[s("load"), path_arg(&preset_path), s("send")],
+        &mut state,
+        &http,
+        &session,
+        &presets,
+    )
+    .unwrap();
+
+    assert_eq!(
+        http.seen.borrow()[0].body.as_deref(),
+        Some("from the preset dir")
+    );
 }

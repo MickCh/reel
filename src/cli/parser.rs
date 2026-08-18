@@ -193,6 +193,10 @@ pub fn parse_args(args: &[String]) -> Result<(Vec<Command>, GlobalFlags)> {
                 let value = tokens.value_for("body", "a value")?;
                 commands.push(Command::Body(value.to_string()));
             }
+            "body-file" => {
+                let value = tokens.value_for("body-file", "a file path")?;
+                commands.push(Command::BodyFile(value.to_string()));
+            }
             "body-rm" => commands.push(Command::BodyRm),
             "cookie-rm" => {
                 let name = tokens.value_for("cookie-rm", "a cookie name")?;

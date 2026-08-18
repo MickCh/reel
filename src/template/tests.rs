@@ -25,7 +25,7 @@ fn request(method: &str, url: &str, body: Option<&str>, headers: &[(&str, &str)]
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
         body: body.map(str::to_string),
-        timeout_secs: None,
+        ..Default::default()
     }
 }
 
@@ -787,4 +787,129 @@ fn quoted_literal_may_contain_closing_braces() {
         interpolate("${{ base64('}}') }}", &empty_ctx()).unwrap(),
         "fX0=" // base64 of "}}"
     );
+}
+
+// --- escaping ---
+
+#[test]
+fn double_dollar_escapes_a_placeholder() {
+    let r = record(200, "x", &[]);
+    assert_eq!(
+        interp("$${{ status }}", std::slice::from_ref(&r)).unwrap(),
+        "${{ status }}"
+    );
+    // The escape is local: a real placeholder next to it still resolves.
+    assert_eq!(
+        interp("$${{ status }} ${{ status }}", &[r]).unwrap(),
+        "${{ status }} 200"
+    );
+}
+
+#[test]
+fn escaped_placeholder_needs_no_valid_expression() {
+    assert_eq!(
+        interp("$${{ nonsense[[ }}", &[]).unwrap(),
+        "${{ nonsense[[ }}"
+    );
+}
+
+// --- file() ---
+
+fn temp_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("reel-tmpl-{}-{}", std::process::id(), tag));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn file_function_reads_a_quoted_path() {
+    let dir = temp_dir("file-fn");
+    let path = dir.join("fragment.txt");
+    std::fs::write(&path, "payload").unwrap();
+
+    let text = format!("[${{{{ file('{}') }}}}]", path.display());
+    assert_eq!(interp(&text, &[]).unwrap(), "[payload]");
+}
+
+#[test]
+fn file_function_resolves_a_nested_expression() {
+    let dir = temp_dir("file-fn-nested");
+    let path = dir.join("fragment.txt");
+    std::fs::write(&path, "payload").unwrap();
+    let mut vars = HashMap::new();
+    vars.insert("p".to_string(), path.to_string_lossy().into_owned());
+
+    let out = interpolate(
+        "${{ file(var.p) }}",
+        &Context {
+            requests: &[],
+            responses: &[],
+            vars: &vars,
+        },
+    )
+    .unwrap();
+    assert_eq!(out, "payload");
+}
+
+#[test]
+fn file_function_missing_file_is_error() {
+    assert!(interp("${{ file('/no/such/fragment.txt') }}", &[]).is_err());
+}
+
+#[test]
+fn file_function_missing_file_takes_the_default() {
+    assert_eq!(
+        interp("${{ file('/no/such/f.txt') | default: none }}", &[]).unwrap(),
+        "none"
+    );
+}
+
+#[test]
+fn file_function_requires_an_argument() {
+    assert!(interp("${{ file() }}", &[]).is_err());
+}
+
+// --- preset-relative path rebasing ---
+
+#[test]
+fn rebase_rewrites_a_relative_path_that_exists_next_to_the_preset() {
+    let dir = temp_dir("rebase-hit");
+    std::fs::write(dir.join("payload.json"), "x").unwrap();
+
+    let out = rebase_file_literals("${{ file('payload.json') }}", &dir);
+    assert_eq!(
+        out,
+        format!("${{{{ file('{}') }}}}", dir.join("payload.json").display())
+    );
+}
+
+#[test]
+fn rebase_leaves_a_path_that_is_not_next_to_the_preset() {
+    let dir = temp_dir("rebase-miss");
+    let text = "${{ file('payload.json') }}";
+    assert_eq!(rebase_file_literals(text, &dir), text);
+}
+
+#[test]
+fn rebase_leaves_text_outside_placeholders_alone() {
+    let dir = temp_dir("rebase-outside");
+    std::fs::write(dir.join("payload.json"), "x").unwrap();
+    let text = "file('payload.json') is not a placeholder";
+    assert_eq!(rebase_file_literals(text, &dir), text);
+}
+
+#[test]
+fn rebase_ignores_a_call_whose_name_only_ends_in_file() {
+    let dir = temp_dir("rebase-name");
+    std::fs::write(dir.join("payload.json"), "x").unwrap();
+    let text = "${{ myfile('payload.json') }}";
+    assert_eq!(rebase_file_literals(text, &dir), text);
+}
+
+#[test]
+fn rebase_keeps_an_absolute_path() {
+    let dir = temp_dir("rebase-abs");
+    let text = "${{ file('/etc/payload.json') }}";
+    assert_eq!(rebase_file_literals(text, &dir), text);
 }

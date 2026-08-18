@@ -92,6 +92,8 @@ struct Request {                   // the request being built — and, unchanged
     url:     Option<String>,       // (after template interpolation)
     headers: Headers,
     body:    Option<String>,
+    body_file: Option<String>,     // body sourced from a file, read at send time;
+                                   // mutually exclusive with `body`
     timeout_secs: Option<u64>,     // None = default (30 s), Some(0) = no timeout
 }
 
@@ -129,22 +131,25 @@ All case-insensitive header semantics (lookup, insert dedup, removal) live in `H
 1. `FileSessionStore::new()` computes the session path (`REEL_SESSION` name or PPID) and, for PID-keyed sessions, the parent's start time; `session.load()` reads the file (or returns `State::default()`; a stale ownership stamp also yields a fresh default)
 2. `parse_args` processes all CLI arguments left-to-right and returns `(Vec<Command>, GlobalFlags)`; no I/O here
 3. `run_commands` executes commands in order, mutating `state`:
-   - `load <PATH>` — replaces `state` wholesale from a JSON file, except the cookie jar and session variables: the session's cookies and vars survive `load` (like they survive `send`) unless the loaded file itself carries a `cookies`/`vars` field
+   - `load <PATH>` — replaces `state` wholesale from a JSON file (then `rebase_preset_paths`), except the cookie jar and session variables: the session's cookies and vars survive `load` (like they survive `send`) unless the loaded file itself carries a `cookies`/`vars` field
    - `save <PATH>` — writes the current in-memory `state.request` to a preset file (never `requests`/`responses`); a write failure aborts the chain with an error
    - `reset` — replaces `state` with `State::default()` and calls `session.delete()`
    - `header <KEY:VALUE>` — `Headers::insert`: key stored as-is (original casing preserved); deduplication on insert is case-insensitive
    - `header-rm <KEY>` — `Headers::remove` (case-insensitive); warns if absent
    - `header-rm-all` — removes all entries from `state.request.headers`
-   - `var <NAME> <VALUE>` — sets `state.vars[NAME]` (overwrite on repeat; names are case-sensitive). Names are validated in the parser: 1+ chars from `[A-Za-z0-9_-]`, so they stay usable inside a `${{ var.<name> }}` placeholder. Values are stored literally (no interpolation — CLI values are literal everywhere; only preset files interpolate)
+   - `var <NAME> <VALUE>` — sets `state.vars[NAME]` (overwrite on repeat; names are case-sensitive). Names are validated in the parser: 1+ chars from `[A-Za-z0-9_-]`, so they stay usable inside a `${{ var.<name> }}` placeholder. Values are stored literally — like every other CLI value, they are never interpolated at set time (interpolation happens at send time, on a copy)
    - `var-rm <NAME>` — removes a session variable; warns if absent
-   - `method`, `url`, `body` — overwrite the respective `state.request` field; `url ""` (empty string) is rejected with an error. `method` uppercases only the standard methods (`normalize_method` in `cli/parser.rs`) — a custom method keeps its casing (RFC 9110: methods are case-sensitive). `body` values are resolved by `resolve_body` in `cli/runner.rs` (not in the parser, which stays I/O-free): `-` reads stdin, `@path` reads a file verbatim, `@@...` escapes a literal leading `@`
-   - `body-rm` — clears `state.request.body`; warns if no body was set
+   - `method`, `url`, `body` — overwrite the respective `state.request` field; `url ""` (empty string) is rejected with an error. `method` uppercases only the standard methods (`normalize_method` in `cli/parser.rs`) — a custom method keeps its casing (RFC 9110: methods are case-sensitive). `body` values are resolved by `resolve_body` in `cli/runner.rs` (not in the parser, which stays I/O-free): `-` reads stdin, `@path` reads a file verbatim, `@@...` escapes a literal leading `@`. Setting `body` clears `body_file`
+   - `body-file <PATH>` — stores the *path* in `state.request.body_file` (clearing `body`); the file is read on every send by `prepare_request`, so an edited payload takes effect without re-running the command. A path that does not exist yet is only a warning — the binding is deliberately late. Contrast `body @path`, which reads the file once, in `resolve_body`
+   - `body-rm` — clears `state.request.body` *and* `body_file`; warns if neither was set
    - `cookie-rm <NAME>` — removes every jar cookie with that name (all domains/paths); warns if none matched
    - `timeout <SECONDS>` — sets `state.request.timeout_secs`; `0` means "no timeout". The HTTP layer applies it per request (`DEFAULT_TIMEOUT_SECS` = 30 when unset); the client itself is built with no timeout so `timeout 0` really disables it
-   - `send` — executes via `http.execute()` and replaces the history: `state.requests`/`state.responses` are cleared only once an attempt actually produced a response, then the new snapshot is pushed — a failed send leaves the previous history untouched (in memory and on disk); calls `session.save()` before printing body
-   - `curl` — prints the current request as an equivalent curl command (`format_curl` in `cli/display.rs`; goes through `with_session_cookies`, so the jar is reflected). Output on stdout — it is data, not a diagnostic. Not a mutation; does not touch the HTTP layer
+   - `send` — interpolates the request via `prepare_request` (see below), executes via `http.execute()` and replaces the history: `state.requests`/`state.responses` are cleared only once an attempt actually produced a response, then the new snapshot is pushed — a failed send leaves the previous history untouched (in memory and on disk); calls `session.save()` before printing body
+   - `curl` — prints the current request as an equivalent curl command (`format_curl` in `cli/display.rs`; goes through `prepare_request` and `with_session_cookies`, so templates are resolved and the jar is reflected — an unresolvable placeholder makes it fail like a send would). Output on stdout — it is data, not a diagnostic. Not a mutation; does not touch the HTTP layer
    - `expect <CONDITION>` — asserts against the session history via `template::check_condition` (which reuses `eval_expr`, so any template expression works: `status`, `body.<path>`, `headers.<name>`, `response[N].*`, `request.*`, `env.*`, `var.*`). Forms: bare `<expr>` (must resolve), `<expr> == <v>`, `<expr> != <v>`, `<expr> contains <v>`. Failure aborts the chain with exit code 1; success prints `expect ok: ...` to stderr. Skipped under `--dry-run`
-   - `then <PATH>` — replaces `state.request` from a preset file (history stays in place), applies template interpolation against the full request/response history (plus environment variables), executes via `http.execute()`, and appends the interpolated request snapshot and response to `state.requests`/`state.responses`; aborts the whole chain on failure. Interpolation runs unconditionally; a placeholder that references missing history (e.g. `${{ body }}` with no previous response) or a missing env var aborts the chain with an error. Env-only presets (`${{ env.* }}`) work even with no prior response.
+   - `then <PATH>` — replaces `state.request` from a preset file **verbatim, placeholders intact** (history stays in place), rebases the preset's relative file paths (`rebase_preset_paths`), then sends it through the same path as `send`. Semantically `then <PATH>` is `load <PATH> send` minus the history clear, which is why interpolation no longer lives here: it happens for every send, in `prepare_request`. The only thing `then` adds is the `source` label, used for the `error in '<path>': ...` message and `ResponseRecord.source`.
+
+   **`prepare_request` (`cli/runner.rs`).** Every send builds the wire request from `state.request` on a *copy*: a `body_file` path is read from disk into `body`, then `apply_interpolation` resolves every `${{ }}` placeholder against the history, the environment, and `state.vars`. The stored request keeps its template text, so a placeholder resolves afresh on each send and a changed `var`/env var takes effect without reloading the preset. It runs once per `execute_and_record` call, *outside* the attempt loop — a retry must resend the same bytes, so `${{ uuid() }}` idempotency keys stay stable across attempts. Failure aborts before the HTTP layer is touched. `--dry-run` and `curl` go through it too, so what they print is what would be sent.
 
    The shared execution path of `send`/`then` (execute → record history → `session.save()` → print → honour `fail`) lives in the `execute_and_record` helper in `cli/runner.rs`. The "body set but Content-Type missing" warning is also emitted there, not in the HTTP layer.
 
@@ -163,9 +168,9 @@ All case-insensitive header semantics (lookup, insert dedup, removal) live in `H
 
 `response [N|all]` in `Full` view uses `response_display_value()` to build the JSON output: the `body` field is embedded as a parsed JSON object when the body is valid JSON, and as a plain string otherwise. The underlying `ResponseRecord.body` is always stored as a raw string.
 
-### Template interpolation (`then`)
+### Template interpolation
 
-Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `body`, and header values. Supported expressions:
+`url`, `body`, and header values may contain `${{ expr }}` placeholders, wherever they came from — a preset file or a plain `reel url ...`. They are resolved at send time by `prepare_request`, never when the value is set (CLI values are stored literally). Supported expressions:
 
 | Expression | Resolves to |
 |---|---|
@@ -187,11 +192,16 @@ Preset files loaded by `then` may contain `${{ expr }}` placeholders in `url`, `
 | `uuid()` | Random v4 UUID (each placeholder evaluated independently) |
 | `now()` / `now(±N)` | Current Unix timestamp in seconds, optionally shifted by N seconds |
 | `base64(<arg>)` | Base64 of the argument: a single-quoted literal (`base64('user:pass')`) or a nested expression (`base64(env.CREDS)`), evaluated recursively |
+| `file(<arg>)` | Contents of a file; argument as for `base64`. The result is *not* interpolated again. A missing file is `Unresolvable`, so `\| default:` covers it |
 | `<expr> \| default: <value>` | Fallback when `<expr>` cannot be resolved (unset env var, missing history/key — errors carrying the `Unresolvable` marker in `template/mod.rs`). Structural errors (unknown function or expression, bad index syntax) propagate even with a default, so a typo cannot silently become the fallback. Split at the first `\|` outside single quotes; handled in `eval_placeholder` (interpolation only — `expect`/`--until` conditions do not support it) |
 
 The bare `body`/`status`/`headers.*` forms always refer to the **last** response; bare `request.*` refers to the **last** request. Use `response[N].*` / `request[N].*` to reach any earlier entry in the chain by 1-based index. Requests and responses share the same 1-based index (`request[N]` is the request that produced `response[N]`). Request records are captured *after* interpolation, so `request.*` reflects the values actually sent.
 
 `env.*` reads the process environment and `var.*` the session's `vars` map; both are independent of history, so a preset that only uses `${{ env.* }}`/`${{ var.* }}` interpolates successfully even with no previous request/response. Like the cookie jar, `vars` survive `send` and `load` and are cleared only by `reset`; `save` never writes them to preset files (it writes only the request).
+
+`$${{ ... }}` is an escape yielding a literal `${{ ... }}` — a request whose own payload is template-shaped (a CI workflow, say) must still go out unchanged. Handled in `interpolate`, and skipped over identically by `map_placeholders`.
+
+**Preset-relative paths.** `body_file` and the quoted argument of `file('...')` may be relative. `rebase_preset_paths` (`cli/runner.rs`) runs once, when `load`/`then` reads the file, and rewrites each such path to an absolute one *if* it exists next to the preset; otherwise it is left alone and stays relative to the working directory at send time. Absolutising matters because the rebased path is persisted in the session and read again from a possibly different directory. The placeholder-aware rewrite is `template::rebase_file_literals` (single path: `template::rebase_path`); it only touches `file('<literal>')` — a nested expression like `file(var.p)` is the user's own to resolve.
 
 If a placeholder cannot be resolved (missing key, non-JSON body, out-of-range index, unset environment variable, unclosed `${{`), the chain aborts immediately with an error. Interpolation is always attempted; a placeholder referencing history that does not exist yet (e.g. `${{ body }}` before any `send`) aborts with a "no previous response/request" error rather than being treated as a literal string.
 
@@ -253,3 +263,4 @@ Likely next additions and where to put them. Implement only when explicitly requ
 - `session.save()` inside the shared `send`/`then` execution path (`execute_and_record` in `cli/runner.rs`) must come before any stdout write — broken-pipe safety. `main` additionally restores `SIGPIPE` to `SIG_DFL` on Unix so `reel send | head` exits quietly instead of panicking.
 - Global flags are set only from command-position match arms in `parse_args` — never from a positional pre-scan, which would let a header/body *value* like `insecure` disable TLS verification.
 - `parse_args` must stay pure (no I/O). All I/O belongs in `run_commands` via the injected traits.
+- Interpolation happens on a copy in `prepare_request`, never in place on `state.request` — the session must keep the template text, or a placeholder would resolve exactly once and then be burnt into the session file.
