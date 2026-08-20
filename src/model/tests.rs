@@ -118,8 +118,10 @@ fn body_round_trip(body: &str) -> Option<String> {
 fn body_round_trips_byte_exact() {
     // Bodies whose native-JSON form would come back different must be stored
     // as plain strings: a JSON string literal (would lose its quotes), null
-    // (would become no body), non-canonical key order, non-canonical number
-    // notation, pretty-printed JSON, and plain text.
+    // (would become no body), non-canonical number notation, pretty-printed
+    // JSON, and plain text. Key order is not among them — serde_json is built
+    // with `preserve_order`, so an object keeps the order it was written in
+    // and is stored natively either way.
     for body in [
         r#""hello""#,
         "null",
@@ -486,4 +488,48 @@ fn response_record_without_elapsed_defaults_to_zero() {
     let restored: ResponseRecord =
         serde_json::from_str(r#"{"status":200,"headers":{},"body":"ok"}"#).unwrap();
     assert_eq!(restored.elapsed_ms, 0);
+}
+
+#[test]
+fn body_merge_round_trips_as_a_json_object() {
+    let json = r#"{"url":"https://x.com","body_merge":{"package_id":"abc","n":1}}"#;
+    let state: State = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        state.request.body_merge.as_deref(),
+        Some(r#"{"package_id":"abc","n":1}"#)
+    );
+
+    let written = serde_json::to_string(&state).unwrap();
+    assert!(
+        written.contains(r#""body_merge":{"package_id":"abc","n":1}"#),
+        "merge patch should be written back as a native object: {written}"
+    );
+}
+
+#[test]
+fn a_request_without_a_merge_patch_writes_no_body_merge_field() {
+    let mut state = State::default();
+    state.request.url = Some("https://x.com".to_string());
+    let written = serde_json::to_string(&state).unwrap();
+    assert!(!written.contains("body_merge"), "{written}");
+}
+
+#[test]
+fn headers_serialize_sorted_by_name() {
+    // The backing HashMap has no order; with serde_json's preserve_order the
+    // written order is the serialized order, so it must be made deterministic.
+    let mut state = State::default();
+    for name in ["zeta", "alpha", "Middle", "beta"] {
+        state
+            .request
+            .headers
+            .insert(name.to_string(), "v".to_string());
+    }
+    let written = serde_json::to_string(&state).unwrap();
+    let start = written.find(r#""headers""#).unwrap();
+    let names: Vec<_> = ["Middle", "alpha", "beta", "zeta"]
+        .iter()
+        .map(|n| written[start..].find(&format!(r#""{}""#, n)).unwrap())
+        .collect();
+    assert!(names.windows(2).all(|w| w[0] < w[1]), "{written}");
 }

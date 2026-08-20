@@ -66,6 +66,48 @@ fn read_body_file(path: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("error reading body file '{}': {}", path, e))
 }
 
+// Apply a JSON Merge Patch (RFC 7386) in place: objects merge recursively,
+// a null member removes the key, and everything else replaces wholesale.
+fn merge_json(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    match patch {
+        serde_json::Value::Object(fields) => {
+            if !target.is_object() {
+                *target = serde_json::Value::Object(serde_json::Map::new());
+            }
+            let map = target
+                .as_object_mut()
+                .expect("just replaced with an object");
+            for (key, value) in fields {
+                if value.is_null() {
+                    map.remove(key);
+                } else {
+                    merge_json(
+                        map.entry(key.clone()).or_insert(serde_json::Value::Null),
+                        value,
+                    );
+                }
+            }
+        }
+        other => *target = other.clone(),
+    }
+}
+
+// Overlay `patch` on the request body. Both sides are already interpolated,
+// so a payload file and its overlay can each carry placeholders. The merged
+// body is re-serialised compactly — the file's own formatting survives only
+// when no patch is set.
+fn apply_body_merge(body: Option<String>, patch: &str) -> Result<String> {
+    let body = body.ok_or_else(|| {
+        anyhow::anyhow!("error: body-merge needs a body — set 'body' or 'body-file' first")
+    })?;
+    let mut target: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("error: body-merge needs a JSON body: {}", e))?;
+    let patch: serde_json::Value = serde_json::from_str(patch)
+        .map_err(|e| anyhow::anyhow!("error: body-merge patch is not valid JSON: {}", e))?;
+    merge_json(&mut target, &patch);
+    Ok(target.to_string())
+}
+
 // The request as it will actually be sent: a file-backed body read from disk,
 // then every ${{ }} placeholder resolved against the session history, the
 // environment, and the session variables.
@@ -92,6 +134,14 @@ fn prepare_request(state: &State, source: Option<&str>) -> Result<Request> {
         Some(path) => anyhow::anyhow!("error in '{}': {}", path, e),
         None => anyhow::anyhow!("error: {}", e),
     })?;
+    if let Some(patch) = request.body_merge.take() {
+        request.body = Some(apply_body_merge(request.body.take(), &patch).map_err(
+            |e| match source {
+                Some(path) => anyhow::anyhow!("error in '{}': {}", path, e),
+                None => e,
+            },
+        )?);
+    }
     Ok(request)
 }
 
@@ -112,6 +162,9 @@ fn rebase_preset_paths(request: &mut Request, preset: &Path) {
     }
     if let Some(body) = &request.body {
         request.body = Some(rebase_file_literals(body, dir));
+    }
+    if let Some(patch) = &request.body_merge {
+        request.body_merge = Some(rebase_file_literals(patch, dir));
     }
     for value in request.headers.values_mut() {
         *value = rebase_file_literals(value, dir);
@@ -504,10 +557,23 @@ fn run_all(
                 state.request.body = None;
                 chain.modified = true;
             }
+            Command::BodyMerge(p) => {
+                // '@path' and '-' resolve exactly as they do for `body`; the
+                // patch is validated now so a typo fails at the command, not at
+                // the next send. Deliberately does NOT clear body/body_file:
+                // the overlay modifies whichever body source is in force.
+                let patch = resolve_body(&p)?;
+                if let Err(e) = serde_json::from_str::<serde_json::Value>(&patch) {
+                    bail!("error: body-merge patch is not valid JSON: {}", e);
+                }
+                state.request.body_merge = Some(patch);
+                chain.modified = true;
+            }
             Command::BodyRm => {
                 let had_body = state.request.body.take().is_some();
                 let had_file = state.request.body_file.take().is_some();
-                if had_body || had_file {
+                let had_merge = state.request.body_merge.take().is_some();
+                if had_body || had_file || had_merge {
                     chain.modified = true;
                 } else {
                     eprintln!("warning: body not set");

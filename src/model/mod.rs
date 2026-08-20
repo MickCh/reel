@@ -53,9 +53,27 @@ mod body_serde {
 // HTTP headers with case-insensitive name semantics. Names keep their original
 // casing (round-tripped through session/preset files as-is), but lookup,
 // insertion dedup, and removal all compare names case-insensitively.
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Default, Clone)]
 #[serde(transparent)]
 pub struct Headers(HashMap<String, String>);
+
+// Serialized by name, sorted. The backing HashMap has no order of its own, and
+// serde_json (built with `preserve_order`) writes a map in insertion order —
+// without this, session and preset files would shuffle their headers on every
+// save, and `response` output would differ from run to run.
+impl Serialize for Headers {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in self.sorted() {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
+    }
+}
 
 impl Headers {
     pub fn get(&self, name: &str) -> Option<&str> {
@@ -136,6 +154,14 @@ pub struct Request {
     // contents as actually sent.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub body_file: Option<String>,
+    // A JSON Merge Patch (RFC 7386) overlaid on the body at send time, so a
+    // preset can add call-specific fields to a payload file it does not own.
+    // Orthogonal to the two body sources: setting `body`/`body_file` leaves it
+    // in place, `body-rm` clears it. Stored with `body_serde` so a preset can
+    // write it as a native JSON object. History snapshots never carry it:
+    // `request.body` records the merged body as actually sent.
+    #[serde(skip_serializing_if = "Option::is_none", with = "body_serde", default)]
+    pub body_merge: Option<String>,
     // Request timeout in seconds, set with `reel timeout <SECONDS>`.
     // None = default (30 s), Some(0) = no timeout.
     #[serde(skip_serializing_if = "Option::is_none", default)]

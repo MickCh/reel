@@ -565,13 +565,17 @@ fn map_placeholders(text: &str, f: impl Fn(&str) -> String) -> String {
     result
 }
 
-// Apply interpolation to all string fields of the request (url, body, header values).
+// Apply interpolation to all string fields of the request (url, body, merge
+// patch, header values).
 pub fn apply_interpolation(request: &mut Request, ctx: &Context) -> Result<()> {
     if let Some(url) = request.url.take() {
         request.url = Some(interpolate(&url, ctx)?);
     }
     if let Some(body) = request.body.take() {
         request.body = Some(interpolate(&body, ctx)?);
+    }
+    if let Some(patch) = request.body_merge.take() {
+        request.body_merge = Some(interpolate(&patch, ctx)?);
     }
     for value in request.headers.values_mut() {
         *value = interpolate(value, ctx)?;

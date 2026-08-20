@@ -78,7 +78,8 @@ Commands can be combined freely in a single invocation.
 | `body <BODY>` | Set request body |
 | `body @<PATH>` / `body -` | Set request body from a file / from stdin (`@@` escapes a body that starts with a literal `@`) |
 | `body-file <PATH>` | Set request body from a file, kept as a path and re-read on every send |
-| `body-rm` | Remove the request body |
+| `body-merge <JSON>` | Overlay JSON fields on the body — an RFC 7386 merge patch, applied at send time (`@path` / `-` accepted) |
+| `body-rm` | Remove the request body, the `body-file` path, and the merge patch |
 | `cookie-rm <NAME>` | Remove all session cookies with the given name |
 | `timeout <SECONDS>` | Set the request timeout (default: 30; `0` disables the timeout) |
 | `var <NAME> <VALUE>` | Set a session variable, readable in templates as `${{ var.NAME }}` |
@@ -152,6 +153,26 @@ reel send                                        # reads it again
 ```
 
 The file contents are interpolated like any other body, so a payload file can itself carry `${{ }}` placeholders. A relative path given on the command line is resolved against the working directory; one that comes from a preset file is resolved against the preset's directory (falling back to the working directory when nothing is there), so a preset plus its payload can be moved or committed together.
+
+A payload file often belongs to something else — an API response you saved, a fixture a colleague produced — and the call needs a few fields the file does not carry. `body-merge` overlays them without touching the file:
+
+```bash
+reel body-file export.json body-merge '{"package_id": "fec1ef2b-0108-4565-8301-13dac5b1a717"}' send
+```
+
+The overlay is a [JSON Merge Patch](https://datatracker.ietf.org/doc/html/rfc7386): objects merge recursively, `null` removes a key, and arrays and scalars replace. It applies after interpolation, so both the file and the patch may contain `${{ }}` placeholders, and it is orthogonal to the body source — setting `body` or `body-file` keeps the patch, `body-rm` clears everything. A preset carries it as a native JSON object:
+
+```json
+{
+  "method": "POST",
+  "url": "https://api.example.com/objects/promote",
+  "headers": { "content-type": "application/json" },
+  "body_file": "export.json",
+  "body_merge": { "package_id": "fec1ef2b-0108-4565-8301-13dac5b1a717" }
+}
+```
+
+A merged body is sent compact, with the original field order preserved (patch fields appended in the order they were written); without a patch, `body-file` still sends the file's bytes as they are. Merging needs the body to be valid JSON — with a non-JSON body, or no body at all, the send fails with an error naming the cause.
 
 ### Reuse settings across calls
 
@@ -496,7 +517,7 @@ Sessions are stored as plain JSON and can be edited or version-controlled:
 }
 ```
 
-A request may carry `"body_file": "payload.json"` instead of `body`: the path is read on every send, and a relative one in a preset file is resolved against that file's directory. The `responses` array is written automatically after each `send` (each record carries its `elapsed_ms` duration) and can be omitted when creating preset files — it will be populated on first use. The `cookies` array is the session's cookie jar, populated from `Set-Cookie` responses; it is never written to preset files. Session variables set with `reel var` appear as a `vars` object (`"vars": { "host": "api.example.com" }`) — also session-only, never written by `save`. PID-keyed session files also carry an `owner_start_time` field identifying the owning shell; it is ignored in preset files.
+A request may carry `"body_file": "payload.json"` instead of `body`: the path is read on every send, and a relative one in a preset file is resolved against that file's directory. A `"body_merge"` object, when present, is applied to whichever body the request produces, as an RFC 7386 merge patch. The `responses` array is written automatically after each `send` (each record carries its `elapsed_ms` duration) and can be omitted when creating preset files — it will be populated on first use. The `cookies` array is the session's cookie jar, populated from `Set-Cookie` responses; it is never written to preset files. Session variables set with `reel var` appear as a `vars` object (`"vars": { "host": "api.example.com" }`) — also session-only, never written by `save`. PID-keyed session files also carry an `owner_start_time` field identifying the owning shell; it is ignored in preset files.
 
 > **Note:** Session files and preset files store credentials (e.g. `Authorization` headers) in plaintext (session files are created with `0600` permissions on Unix). Avoid committing preset files that contain real tokens to version control.
 

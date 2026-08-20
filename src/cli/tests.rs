@@ -2429,3 +2429,275 @@ fn load_resolves_body_file_next_to_the_preset() {
         Some("from the preset dir")
     );
 }
+
+// --- body-merge (RFC 7386 overlay) ---
+
+fn sent_body_json(http: &MockHttp, index: usize) -> serde_json::Value {
+    let seen = http.seen.borrow();
+    serde_json::from_str(seen[index].body.as_deref().unwrap()).unwrap()
+}
+
+#[test]
+fn parse_body_merge() {
+    let (cmds, _) = parse_args(&args(r#"body-merge {"a":1}"#)).unwrap();
+    assert!(matches!(&cmds[0], Command::BodyMerge(p) if p == r#"{"a":1}"#));
+}
+
+#[test]
+fn body_merge_overlays_fields_on_an_inline_body() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run(
+        r#"url https://example.com body {"a":1} body-merge {"b":2} send"#,
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    let sent = sent_body_json(&http, 0);
+    assert_eq!(sent["a"], 1);
+    assert_eq!(sent["b"], 2);
+}
+
+#[test]
+fn body_merge_overlays_fields_on_a_file_body() {
+    let dir = temp_dir("body-merge-file");
+    let payload = dir.join("payload.json");
+    std::fs::write(&payload, r#"{"a":1,"nested":{"x":1}}"#).unwrap();
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run_argv(
+        &[
+            s("url"),
+            s("https://example.com"),
+            s("body-file"),
+            path_arg(&payload),
+            s("body-merge"),
+            s(r#"{"package_id":"abc"}"#),
+            s("send"),
+        ],
+        &mut state,
+        &http,
+        &session,
+        &MockPresets::default(),
+    )
+    .unwrap();
+
+    let sent = sent_body_json(&http, 0);
+    assert_eq!(sent["a"], 1);
+    assert_eq!(sent["nested"]["x"], 1);
+    assert_eq!(sent["package_id"], "abc");
+    // The payload file itself is untouched.
+    assert_eq!(
+        std::fs::read_to_string(&payload).unwrap(),
+        r#"{"a":1,"nested":{"x":1}}"#
+    );
+}
+
+#[test]
+fn body_merge_merges_nested_objects_and_replaces_arrays() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run(
+        r#"url https://example.com body {"a":{"x":1,"y":2},"l":[1,2]} body-merge {"a":{"y":9},"l":[3]} send"#,
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    let sent = sent_body_json(&http, 0);
+    assert_eq!(sent["a"]["x"], 1);
+    assert_eq!(sent["a"]["y"], 9);
+    assert_eq!(sent["l"], serde_json::json!([3]));
+}
+
+#[test]
+fn body_merge_null_removes_a_key() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run(
+        r#"url https://example.com body {"a":1,"b":2} body-merge {"b":null} send"#,
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    let sent = sent_body_json(&http, 0);
+    assert_eq!(sent["a"], 1);
+    assert!(sent.get("b").is_none());
+}
+
+#[test]
+fn body_merge_is_interpolated() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.vars.insert(s("id"), s("42"));
+
+    run(
+        r#"url https://example.com body {"a":1} body-merge {"id":"${{var.id}}"} send"#,
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    assert_eq!(sent_body_json(&http, 0)["id"], "42");
+}
+
+#[test]
+fn body_merge_keeps_the_original_field_order() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run(
+        r#"url https://example.com body {"zebra":1,"alpha":2} body-merge {"middle":3} send"#,
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    assert_eq!(
+        http.seen.borrow()[0].body.as_deref(),
+        Some(r#"{"zebra":1,"alpha":2,"middle":3}"#)
+    );
+}
+
+#[test]
+fn body_merge_survives_setting_a_body_source() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run(
+        r#"body-merge {"a":1} body-file payload.json"#,
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+
+    assert_eq!(state.request.body_merge.as_deref(), Some(r#"{"a":1}"#));
+    assert_eq!(state.request.body_file.as_deref(), Some("payload.json"));
+}
+
+#[test]
+fn body_rm_clears_the_merge_patch() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+    state.request.body_merge = Some(s(r#"{"a":1}"#));
+
+    run("body-rm", &mut state, &http, &session).unwrap();
+
+    assert!(state.request.body_merge.is_none());
+    assert_eq!(session.save_count.get(), 1);
+}
+
+#[test]
+fn body_merge_without_a_body_is_an_error() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    assert!(
+        run(
+            r#"url https://example.com body-merge {"a":1} send"#,
+            &mut state,
+            &http,
+            &session
+        )
+        .is_err()
+    );
+    assert!(http.seen.borrow().is_empty());
+}
+
+#[test]
+fn body_merge_on_a_non_json_body_is_an_error() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    assert!(
+        run(
+            r#"url https://example.com body not-json body-merge {"a":1} send"#,
+            &mut state,
+            &http,
+            &session
+        )
+        .is_err()
+    );
+    assert!(http.seen.borrow().is_empty());
+}
+
+#[test]
+fn an_invalid_merge_patch_fails_at_the_command() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    assert!(run("body-merge nope", &mut state, &http, &session).is_err());
+    assert!(state.request.body_merge.is_none());
+}
+
+#[test]
+fn body_merge_patch_is_not_burnt_into_the_session() {
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run(
+        r#"url https://example.com body {"a":1} body-merge {"key":"${{uuid()}}"} send"#,
+        &mut state,
+        &http,
+        &session,
+    )
+    .unwrap();
+    run("send", &mut state, &http, &session).unwrap();
+
+    assert_eq!(
+        state.request.body_merge.as_deref(),
+        Some(r#"{"key":"${{uuid()}}"}"#)
+    );
+    let first = sent_body_json(&http, 0)["key"].clone();
+    let second = sent_body_json(&http, 1)["key"].clone();
+    assert_ne!(first, second);
+}
+
+#[test]
+fn then_rebases_a_file_literal_inside_the_merge_patch() {
+    let dir = temp_dir("merge-rebase");
+    std::fs::write(dir.join("token.txt"), "s3cret").unwrap();
+    let preset_path = dir.join("req.json");
+    let mut file = preset("POST", "https://example.com");
+    file.request.body = Some(s(r#"{"a":1}"#));
+    file.request.body_merge = Some(s(r#"{"token":"${{ file('token.txt') }}"}"#));
+    let presets = MockPresets::with(&path_arg(&preset_path), file);
+    let http = MockHttp::ok(200);
+    let session = MockSession::default();
+    let mut state = State::default();
+
+    run_argv(
+        &[s("then"), path_arg(&preset_path)],
+        &mut state,
+        &http,
+        &session,
+        &presets,
+    )
+    .unwrap();
+
+    assert_eq!(sent_body_json(&http, 0)["token"], "s3cret");
+}

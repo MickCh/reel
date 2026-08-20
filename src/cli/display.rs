@@ -58,6 +58,8 @@ fn response_display_value(r: &ResponseRecord) -> serde_json::Value {
         "source": r.source,
         "status": r.status,
         "elapsed_ms": r.elapsed_ms,
+        // Headers serialize sorted by name (see model::Headers) — a HashMap
+        // has no order of its own, and this output must stay stable.
         "headers": r.headers,
         "body": body_val,
     })
@@ -104,6 +106,9 @@ pub fn show_state(state: &State, session: &dyn SessionStore) {
     }
     if let Some(path) = &state.request.body_file {
         eprintln!("  body    @{} (read on send)", path);
+    }
+    if let Some(patch) = &state.request.body_merge {
+        eprintln!("  merge   {}", patch);
     }
     match state.request.timeout_secs {
         Some(0) => eprintln!("  timeout none"),
@@ -191,7 +196,10 @@ pub fn print_usage() {
         "  body @<PATH> / body -  set request body from a file / from stdin (@@ escapes a literal @)"
     );
     eprintln!("  body-file <PATH>       set request body from a file, re-read on every send");
-    eprintln!("  body-rm                remove the request body");
+    eprintln!(
+        "  body-merge <JSON>      overlay JSON fields on the body (RFC 7386 merge patch; @path / - accepted)"
+    );
+    eprintln!("  body-rm                remove the request body, file, and merge patch");
     eprintln!("  cookie-rm <NAME>       remove all session cookies with the given name");
     eprintln!(
         "  timeout <SECONDS>      set the request timeout (default: 30; 0 disables the timeout)"
